@@ -11,39 +11,70 @@ pub fn format_program(program: &Program) -> String {
             Decl::Function(function) => format_function(&mut out, function),
             Decl::Type(type_decl) => format_type_decl(&mut out, type_decl),
             Decl::Route(route) => format_route(&mut out, route),
+            Decl::Import(import) => format_import(&mut out, import),
         }
     }
     out
 }
 
+fn format_import(out: &mut String, import: &ImportDecl) {
+    let items = import
+        .items
+        .iter()
+        .map(|item| item.name.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    out.push_str(&format!(
+        "import {{ {} }} from {:?}\n",
+        items, import.module
+    ));
+}
+
 fn format_type_decl(out: &mut String, type_decl: &TypeDecl) {
+    if type_decl.exported {
+        out.push_str("export ");
+    }
     out.push_str(&format!("type {} = {{\n", type_decl.name));
+
     for field in &type_decl.fields {
         out.push_str(&format!("  {}: {}\n", field.name, format_type(&field.ty)));
     }
+
     out.push_str("}\n");
 }
 
 fn format_function(out: &mut String, function: &FunctionDecl) {
+    if function.exported {
+        out.push_str("export ");
+    }
+
     let params = function
         .params
         .iter()
         .map(|param| format!("{}: {}", param.name, format_type(&param.ty)))
         .collect::<Vec<_>>()
         .join(", ");
+
     out.push_str(&format!(
         "function {}({}): {} {{\n",
         function.name,
         params,
         format_type(&function.return_type)
     ));
+
     for stmt in &function.body {
         format_stmt(out, stmt, 1);
     }
+
     out.push_str("}\n");
 }
 
 fn format_route(out: &mut String, route: &RouteDecl) {
+    if route.exported {
+        out.push_str("export ");
+    }
+
     out.push_str(&format!(
         "route {} {:?}\n",
         format_method(route.method),

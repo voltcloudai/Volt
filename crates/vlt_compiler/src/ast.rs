@@ -9,6 +9,7 @@ pub struct Program {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Decl {
+    Import(ImportDecl),
     Function(FunctionDecl),
     Type(TypeDecl),
     Route(RouteDecl),
@@ -17,7 +18,21 @@ pub enum Decl {
 pub type TypeRef = Type;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportDecl {
+    pub items: Vec<ImportItem>,
+    pub module: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportItem {
+    pub name: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionDecl {
+    pub exported: bool,
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Type,
@@ -34,6 +49,7 @@ pub struct Param {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeDecl {
+    pub exported: bool,
     pub name: String,
     pub fields: Vec<FieldDecl>,
     pub span: Span,
@@ -48,6 +64,7 @@ pub struct FieldDecl {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteDecl {
+    pub exported: bool,
     pub method: HttpMethod,
     pub path: String,
     pub params: Vec<RouteField>,

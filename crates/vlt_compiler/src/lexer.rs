@@ -45,6 +45,10 @@ pub enum TokenKind {
     LBracket,
     RBracket,
     Eof,
+
+    Import,
+    Export,
+    From,
 }
 
 pub fn lex(source: &SourceFile) -> Result<Vec<Token>, DiagnosticBag> {
@@ -287,6 +291,10 @@ impl Lexer<'_> {
             "else" => TokenKind::Else,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
+            "import" => TokenKind::Import,
+            "export" => TokenKind::Export,
+            "from" => TokenKind::From,
+
             _ => TokenKind::Ident(text),
         };
         self.push(kind, start, end);

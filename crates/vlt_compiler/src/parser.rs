@@ -27,16 +27,20 @@ impl Parser<'_> {
 
         while !self.at(TokenKindName::Eof) {
             match self.peek_kind() {
-                TokenKind::Function => declarations.push(Decl::Function(self.parse_function())),
-                TokenKind::Type => declarations.push(Decl::Type(self.parse_type_decl())),
-                TokenKind::Route => declarations.push(Decl::Route(self.parse_route_decl())),
+                TokenKind::Import => declarations.push(Decl::Import(self.parse_import_decl())),
+                TokenKind::Export => declarations.push(self.parse_export_decl()),
+                TokenKind::Function => {
+                    declarations.push(Decl::Function(self.parse_function(false)))
+                }
+                TokenKind::Type => declarations.push(Decl::Type(self.parse_type_decl(false))),
+                TokenKind::Route => declarations.push(Decl::Route(self.parse_route_decl(false))),
                 _ => {
                     let token = self.peek().clone();
                     self.error(
                         "E010",
                         "expected top-level declaration",
                         token.span,
-                        "start with `function`, `type`, or `route`",
+                        "start with `import`, `export`, `function`, `type`, or `route`",
                     );
                     self.advance();
                 }
@@ -50,7 +54,74 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_route_decl(&mut self) -> RouteDecl {
+    fn parse_export_decl(&mut self) -> Decl {
+        self.expect(TokenKindName::Export, "expected `export`");
+
+        match self.peek_kind() {
+            TokenKind::Function => Decl::Function(self.parse_function(true)),
+            TokenKind::Type => Decl::Type(self.parse_type_decl(true)),
+            TokenKind::Route => Decl::Route(self.parse_route_decl(true)),
+            _ => {
+                let token = self.peek().clone();
+                self.error(
+                    "EEXPORT001",
+                    "expected declaration after `export`",
+                    token.span,
+                    "export a `function`, `type`, or `route`",
+                );
+                self.advance();
+
+                Decl::Type(TypeDecl {
+                    exported: true,
+                    name: "<error>".to_string(),
+                    fields: Vec::new(),
+                    span: token.span,
+                })
+            }
+        }
+    }
+
+    fn parse_import_decl(&mut self) -> ImportDecl {
+        let start = self
+            .expect(TokenKindName::Import, "expected `import`")
+            .start;
+
+        self.expect(TokenKindName::LBrace, "expected `{` after `import`");
+
+        let mut items = Vec::new();
+        while !self.at(TokenKindName::RBrace) && !self.at(TokenKindName::Eof) {
+            let (name, span) = self.expect_ident("expected imported symbol name");
+            items.push(ImportItem { name, span });
+
+            if !self.eat(TokenKindName::Comma) {
+                break;
+            }
+        }
+
+        self.expect(TokenKindName::RBrace, "expected `}` after import list");
+        self.expect(TokenKindName::From, "expected `from` after import list");
+
+        let module_token = self.advance();
+        let module = if let TokenKind::String(value) = module_token.kind {
+            value
+        } else {
+            self.error(
+                "EIMPORT001",
+                "expected module path string after `from`",
+                module_token.span,
+                "write `from \"./module\"`",
+            );
+            String::new()
+        };
+
+        ImportDecl {
+            items,
+            module,
+            span: Span::new(start, module_token.span.end),
+        }
+    }
+
+    fn parse_route_decl(&mut self, exported: bool) -> RouteDecl {
         let start = self.expect(TokenKindName::Route, "expected `route`").start;
         let (method, method_span) = self.parse_http_method();
         let path_token = self.advance();
@@ -119,6 +190,7 @@ impl Parser<'_> {
             .max(self.previous_span().end);
 
         RouteDecl {
+            exported,
             method,
             path,
             params,
@@ -234,7 +306,7 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_function(&mut self) -> FunctionDecl {
+    fn parse_function(&mut self, exported: bool) -> FunctionDecl {
         let start = self
             .expect(TokenKindName::Function, "expected `function`")
             .start;
@@ -268,6 +340,7 @@ impl Parser<'_> {
             .max(self.previous_span().end);
 
         FunctionDecl {
+            exported,
             name,
             params,
             return_type,
@@ -276,7 +349,7 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_type_decl(&mut self) -> TypeDecl {
+    fn parse_type_decl(&mut self, exported: bool) -> TypeDecl {
         let start = self.expect(TokenKindName::Type, "expected `type`").start;
         let (name, _) = self.expect_ident("expected type name");
         self.expect(TokenKindName::Equals, "expected `=` after type name");
@@ -299,6 +372,7 @@ impl Parser<'_> {
             .end;
 
         TypeDecl {
+            exported,
             name,
             fields,
             span: Span::new(start, end),
@@ -771,6 +845,9 @@ fn stmt_span(stmt: &Stmt) -> Span {
 
 #[derive(Debug, Clone, Copy)]
 enum TokenKindName {
+    Import,
+    Export,
+    From,
     Function,
     Type,
     Const,
@@ -808,6 +885,9 @@ impl TokenKindName {
         matches!(
             (self, kind),
             (TokenKindName::Function, TokenKind::Function)
+                | (TokenKindName::Export, TokenKind::Export)
+                | (TokenKindName::Import, TokenKind::Import)
+                | (TokenKindName::From, TokenKind::From)
                 | (TokenKindName::Type, TokenKind::Type)
                 | (TokenKindName::Const, TokenKind::Const)
                 | (TokenKindName::Let, TokenKind::Let)

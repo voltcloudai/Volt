@@ -8,6 +8,7 @@ pub fn generate_rust(program: &Program) -> String {
 
     for declaration in &program.declarations {
         match declaration {
+            Decl::Import(_) => {}
             Decl::Type(type_decl) => {
                 emit_type_decl(&mut out, type_decl);
                 out.push('\n');

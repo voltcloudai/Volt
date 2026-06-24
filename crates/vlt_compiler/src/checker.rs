@@ -4,18 +4,54 @@ use crate::types::Type;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
-struct FunctionSig {
-    params: Vec<Type>,
-    return_type: Type,
+pub struct FunctionSig {
+    pub params: Vec<Type>,
+    pub return_type: Type,
 }
 
 #[derive(Debug, Clone)]
-struct StructSig {
-    fields: HashMap<String, Type>,
+pub struct StructSig {
+    pub fields: HashMap<String, Type>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExternalSymbols {
+    pub functions: HashMap<String, FunctionSig>,
+    pub structs: HashMap<String, StructSig>,
+}
+
+impl ExternalSymbols {
+    pub fn insert_function(
+        &mut self,
+        name: impl Into<String>,
+        params: Vec<Type>,
+        return_type: Type,
+    ) {
+        self.functions.insert(
+            name.into(),
+            FunctionSig {
+                params,
+                return_type,
+            },
+        );
+    }
+
+    pub fn insert_struct(&mut self, name: impl Into<String>, fields: HashMap<String, Type>) {
+        self.structs.insert(name.into(), StructSig { fields });
+    }
 }
 
 pub fn check_program(program: &Program, source: &SourceFile) -> Result<(), DiagnosticBag> {
-    Checker::new(program, source).check()
+    Checker::new(program, source, ExternalSymbols::default(), true).check()
+}
+
+pub fn check_program_with_imports(
+    program: &Program,
+    source: &SourceFile,
+    external: ExternalSymbols,
+    require_entrypoint: bool,
+) -> Result<(), DiagnosticBag> {
+    Checker::new(program, source, external, require_entrypoint).check()
 }
 
 struct Checker<'a> {
@@ -25,17 +61,24 @@ struct Checker<'a> {
     functions: HashMap<String, FunctionSig>,
     structs: HashMap<String, StructSig>,
     route_scope: bool,
+    require_entrypoint: bool,
 }
 
 impl<'a> Checker<'a> {
-    fn new(program: &'a Program, source: &'a SourceFile) -> Self {
+    fn new(
+        program: &'a Program,
+        source: &'a SourceFile,
+        external: ExternalSymbols,
+        require_entrypoint: bool,
+    ) -> Self {
         Self {
             program,
             source,
             diagnostics: DiagnosticBag::new(),
-            functions: HashMap::new(),
-            structs: HashMap::new(),
+            functions: external.functions,
+            structs: external.structs,
             route_scope: false,
+            require_entrypoint,
         }
     }
 
@@ -44,6 +87,7 @@ impl<'a> Checker<'a> {
 
         for declaration in &self.program.declarations {
             match declaration {
+                Decl::Import(_) => {}
                 Decl::Function(function) => self.check_function(function),
                 Decl::Type(type_decl) => self.check_type_decl(type_decl),
                 Decl::Route(route) => self.check_route(route),
@@ -55,7 +99,8 @@ impl<'a> Checker<'a> {
             .declarations
             .iter()
             .any(|declaration| matches!(declaration, Decl::Route(_)));
-        if !self.functions.contains_key("main") && !has_route {
+
+        if self.require_entrypoint && !self.functions.contains_key("main") && !has_route {
             self.error(
                 "E100",
                 "missing `main` function",
@@ -74,6 +119,7 @@ impl<'a> Checker<'a> {
     fn collect_declarations(&mut self) {
         for declaration in &self.program.declarations {
             match declaration {
+                Decl::Import(_) => {}
                 Decl::Function(function) => {
                     if self.functions.contains_key(&function.name) {
                         self.error(

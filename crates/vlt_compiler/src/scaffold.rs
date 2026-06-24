@@ -133,7 +133,9 @@ function main(): void {
 }
 "#;
 
-const HEALTH_ROUTES: &str = r#"route get "/health"
+const HEALTH_ROUTES: &str = r#"import { HealthResponse } from "./health.types"
+
+route get "/health"
   ok 200 HealthResponse
 {
   return ok(HealthResponse {
@@ -142,12 +144,15 @@ const HEALTH_ROUTES: &str = r#"route get "/health"
 }
 "#;
 
-const HEALTH_TYPES: &str = r#"type HealthResponse = {
+const HEALTH_TYPES: &str = r#"export type HealthResponse = {
   status: string
 }
 "#;
 
-const USERS_ROUTES: &str = r#"route get "/users/{id}"
+const USERS_ROUTES: &str = r#"import { User, CreateUserInput } from "./users.types"
+import { UserNotFound, DatabaseError, InvalidEmail } from "./users.errors"
+
+route get "/users/{id}"
   params { id: u64 }
   ok 200 User
   errors {
@@ -178,7 +183,10 @@ route post "/users"
 }
 "#;
 
-const USERS_SERVICE: &str = r#"function getUser(id: u64): Result<User, UserError> {
+const USERS_SERVICE: &str = r#"import { User, CreateUserInput } from "./users.types"
+import { UserError } from "./users.errors"
+
+export function getUser(id: u64): Result<User, UserError> {
   return ok(User {
     id: id
     email: "demo@test.com"
@@ -186,7 +194,7 @@ const USERS_SERVICE: &str = r#"function getUser(id: u64): Result<User, UserError
   })
 }
 
-function createUser(input: CreateUserInput): Result<User, UserError> {
+export function createUser(input: CreateUserInput): Result<User, UserError> {
   return ok(User {
     id: 1
     email: input.email
@@ -195,7 +203,10 @@ function createUser(input: CreateUserInput): Result<User, UserError> {
 }
 "#;
 
-const USERS_REPOSITORY: &str = r#"function findUserById(id: u64): Result<User, UserError> {
+const USERS_REPOSITORY: &str = r#"import { User, CreateUserInput } from "./users.types"
+import { UserError } from "./users.errors"
+
+export function findUserById(id: u64): Result<User, UserError> {
   return ok(User {
     id: id
     email: "demo@test.com"
@@ -203,7 +214,7 @@ const USERS_REPOSITORY: &str = r#"function findUserById(id: u64): Result<User, U
   })
 }
 
-function insertUser(input: CreateUserInput): Result<User, UserError> {
+export function insertUser(input: CreateUserInput): Result<User, UserError> {
   return ok(User {
     id: 1
     email: input.email
@@ -212,32 +223,35 @@ function insertUser(input: CreateUserInput): Result<User, UserError> {
 }
 "#;
 
-const USERS_TYPES: &str = r#"type User = {
+const USERS_TYPES: &str = r#"export type User = {
   id: u64
   email: string
   name: string
 }
 
-type CreateUserInput = {
+export type CreateUserInput = {
   email: string
   name: string
 }
 "#;
 
-const USERS_ERRORS: &str = r#"type UserError = {
+const USERS_ERRORS: &str = r#"export type UserError = {
   code: string
   message: string
 }
 
-type UserNotFound = {
+export type UserNotFound = {
   message: string
 }
 
-type DatabaseError = {
+export type InvalidEmail = {
+  message: string
+}
+
+export type DatabaseError = {
   message: string
 }
 "#;
-
 const USERS_TEST: &str = r#"function testCreateUser(): void {
   print("create user test placeholder")
 }

@@ -145,7 +145,9 @@ fn unsupported_route_body_fails_before_rust_is_generated() {
     let root = dir.path().join("my-api");
     std::fs::write(
         root.join("src/health/health.routes.vlt"),
-        r#"route get "/health"
+        r#"import { HealthResponse } from "./health.types"
+
+route get "/health"
   ok 200 HealthResponse
 {
   if (true) {

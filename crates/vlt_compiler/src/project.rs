@@ -60,21 +60,26 @@ pub fn compile_file(path: &Path, output_root: &Path) -> ProjectResult<BuildOutpu
 
 pub fn compile_project(root: &Path, output_root: &Path) -> ProjectResult<BuildOutput> {
     let root = project_root(root);
+
     if !is_api_project(&root) {
         let entrypoint = root.join("src/main.vlt");
         return compile_file(&entrypoint, output_root);
     }
 
-    let source = merged_project_source(&root)?;
-    let program = parse_source(&source).map_err(ProjectError::Diagnostics)?;
-    check_program(&program, &source).map_err(ProjectError::Diagnostics)?;
-    let rust = generate_axum_server(&program, &source).map_err(ProjectError::Diagnostics)?;
+    let resolved = crate::resolver::resolve_project(&root).map_err(|err| match err {
+        crate::resolver::ResolveError::Io(err) => ProjectError::Io(err),
+        crate::resolver::ResolveError::Diagnostics(bag) => ProjectError::Diagnostics(bag),
+    })?;
+
+    let rust = generate_axum_server(&resolved.program, &resolved.source)
+        .map_err(ProjectError::Diagnostics)?;
 
     let project_name = project_name(&root);
     let cargo_root = output_root.join("rust-project");
     let cargo_src = cargo_root.join("src");
     std::fs::create_dir_all(&cargo_src)?;
     std::fs::write(cargo_root.join("Cargo.toml"), api_cargo_toml(&project_name))?;
+
     let rust_file = cargo_src.join("main.rs");
     std::fs::write(&rust_file, rust)?;
 
@@ -83,6 +88,7 @@ pub fn compile_project(root: &Path, output_root: &Path) -> ProjectResult<BuildOu
         .arg("--release")
         .current_dir(&cargo_root)
         .output()?;
+
     if !output.status.success() {
         return Err(ProjectError::Rustc(
             String::from_utf8_lossy(&output.stderr).to_string(),
@@ -90,10 +96,12 @@ pub fn compile_project(root: &Path, output_root: &Path) -> ProjectResult<BuildOu
     }
 
     std::fs::create_dir_all(output_root)?;
+
     let built_binary = cargo_root
         .join("target")
         .join("release")
         .join(binary_file_name(&project_name));
+
     let binary = output_root.join(binary_file_name(&project_name));
     std::fs::copy(&built_binary, &binary)?;
 
@@ -109,38 +117,6 @@ pub fn run_file(path: &Path, output_root: &Path) -> ProjectResult<String> {
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-fn merged_project_source(root: &Path) -> std::io::Result<SourceFile> {
-    let mut files = Vec::new();
-    collect_volt_files(&root.join("src"), &mut files)?;
-    files.sort();
-
-    let mut source_text = String::new();
-    for file in files {
-        let text = std::fs::read_to_string(&file)?;
-        source_text.push_str(&format!("// file: {}\n", file.display()));
-        source_text.push_str(&text);
-        source_text.push_str("\n\n");
-    }
-
-    Ok(SourceFile::new(root.join("src"), source_text))
-}
-
-fn collect_volt_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_volt_files(&path, files)?;
-        } else if path.extension().is_some_and(|ext| ext == "vlt") {
-            files.push(path);
-        }
-    }
-    Ok(())
 }
 
 fn project_root(start: &Path) -> PathBuf {

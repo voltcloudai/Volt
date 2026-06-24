@@ -707,6 +707,7 @@ fn collect_symbols(
         let mut functions = Vec::new();
         for declaration in &program.declarations {
             match declaration {
+                Decl::Import(_) => {}
                 Decl::Type(type_decl) => types.push(type_info(file, module, type_decl)),
                 Decl::Function(function) => functions.push(function_info(file, module, function)),
                 Decl::Route(_) => {}

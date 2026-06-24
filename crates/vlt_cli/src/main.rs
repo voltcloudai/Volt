@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use vlt_compiler::ai::{
     ai_prompt, ai_summary, explain_symbol, index_project, plan_task, AiPromptFormat,
 };
-use vlt_compiler::project::{compile_file, run_file, ProjectError};
+use vlt_compiler::project::{compile_file, compile_project, run_file, ProjectError};
 use vlt_compiler::scaffold::create_api_project;
 use vlt_compiler::{check_program, format_program, parse_source, SourceFile};
 
@@ -39,7 +39,7 @@ enum Command {
         file: PathBuf,
     },
     Build {
-        file: PathBuf,
+        file: Option<PathBuf>,
     },
     Run {
         file: PathBuf,
@@ -231,14 +231,25 @@ fn run() -> Result<(), ()> {
                 }
             }
         }
-        Command::Build { file } => match compile_file(&file, &output_root()) {
-            Ok(output) => {
-                println!("generated Rust: {}", output.rust_file.display());
-                println!("built binary: {}", output.binary.display());
-                Ok(())
+        Command::Build { file } => {
+            let result = if let Some(file) = &file {
+                compile_file(file, &output_root())
+            } else {
+                let cwd = current_dir()?;
+                compile_project(&cwd, &output_root())
+            };
+            match result {
+                Ok(output) => {
+                    println!("generated Rust: {}", output.rust_file.display());
+                    println!("built binary: {}", output.binary.display());
+                    Ok(())
+                }
+                Err(error) => {
+                    let diagnostic_file = file.unwrap_or_else(|| PathBuf::from("src"));
+                    report_project_error(&diagnostic_file, error)
+                }
             }
-            Err(error) => report_project_error(&file, error),
-        },
+        }
         Command::Run { file } => match run_file(&file, &output_root()) {
             Ok(stdout) => {
                 print!("{stdout}");

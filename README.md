@@ -25,6 +25,24 @@ cargo run -p vlt_cli -- plan "add new update user endpoint"
 
 The CLI binary is named `vlt`. Build outputs are written under `target/volt/`.
 
+## Run A Generated API
+
+```sh
+vlt new api my-api
+cd my-api
+vlt build
+./target/volt/my-api
+curl http://localhost:8080/health
+```
+
+Expected response:
+
+```json
+{"status":"ok"}
+```
+
+`vlt build` in an API project writes a temporary Rust project to `target/volt/rust-project`, builds it with Cargo, and copies the server binary to `target/volt/<project-name>`.
+
 ## AI-Native Project Context
 
 Volt projects can generate compact context for AI-assisted engineering:
@@ -122,18 +140,31 @@ route patch "/users/{id}"
 
 Supported methods are `get`, `post`, `put`, `patch`, and `delete`. Route bodies can refer to implicit `params`, `query`, `body`, and `ctx` symbols. Path params use `{id}` syntax so planner output and generated prompts stay consistent with the language, not Express-style `:id` paths.
 
-Native routes currently generate structured AI metadata and visible Rust route scaffolding. The intended Rust mapping is Axum-compatible: path params become `axum::extract::Path`, request bodies become `axum::Json`, success returns use `StatusCode` plus JSON, and errors map to declared HTTP statuses.
+Native routes generate structured AI metadata and real Rust/Axum handlers in API builds. Path params become `axum::extract::Path`, query params become `axum::extract::Query`, request bodies become `axum::Json`, success returns use `StatusCode` plus JSON, and routes are registered on one `axum::Router`.
+
+Current route body lowering supports:
+
+- `return ok(<struct literal>)`
+- `return ok(<identifier>)`
+- simple `const name = <expr>`
+- `params.id`, `query.page`, and `body.email` field access
+- string and integer literals
+- struct literals
+- simple function calls already expressible by existing codegen
+
+Unsupported route body syntax fails with `EHTTPLOWER001` instead of generating invalid Rust.
 
 ## Current Limitations
 
-- No production HTTP runtime, async execution model, package manager, or LLVM backend yet.
+- The HTTP runtime is a minimal Axum vertical slice, not a full framework.
+- No middleware, authentication, database integration, OpenAPI generation, package manager, or LLVM backend yet.
 - No classes, inheritance, decorators, macros, exceptions, `null`, `undefined`, or `any`.
 - Generic support is limited to recognizing `Result<T, E>`.
 - The formatter is intentionally simple and prints canonical source to stdout.
 - Rust code generation is direct and readable, not optimized.
 - `vlt plan` is offline and deterministic. It does not call an LLM provider yet.
 - `vlt ai prompt` generates prompts only. It does not call Codex, Claude, OpenAI, Anthropic, or any external AI provider.
-- Native route parsing, validation, indexing, and Rust scaffolding exist, but handler lowering is not a full HTTP framework yet.
+- Native route lowering only supports a small route body subset.
 - Call graph fields are placeholders.
 - Generated API projects use native route syntax.
 

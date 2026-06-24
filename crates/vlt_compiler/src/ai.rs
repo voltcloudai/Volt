@@ -257,6 +257,7 @@ pub fn ai_summary(root: &Path) -> std::io::Result<String> {
                 route.method, route.path, target, route.file
             ));
         }
+        out.push_str("\nNative routes lower to readable Rust/Axum handlers in API builds when their bodies stay inside the supported lowering subset.\n");
     }
 
     if !index.functions.is_empty() {
@@ -515,9 +516,7 @@ fn render_prompt(context: &PlanContext, format: AiPromptFormat) -> String {
     out.push_str("\n## Validation commands\n\n");
     out.push_str("```bash\n");
     out.push_str("vlt ai index\n");
-    out.push_str("vlt fmt\n");
-    out.push_str("vlt check\n");
-    out.push_str(&format!("vlt test {}\n", context.module));
+    out.push_str("vlt build\n");
     out.push_str("```\n\n");
     out.push_str("## Important constraints\n\n");
     out.push_str("- Do not call external AI APIs.\n");
@@ -532,7 +531,7 @@ fn render_prompt(context: &PlanContext, format: AiPromptFormat) -> String {
             out.push_str("- Follow the repository `AGENTS.md`.\n");
             out.push_str("- Prefer small, testable changes.\n");
             out.push_str("- Run the validation commands before finishing.\n");
-            out.push_str("- If compiler support is missing for intended future syntax, use currently supported Volt syntax and metadata comments.\n");
+            out.push_str("- Keep native route bodies inside the supported Axum lowering subset unless you are extending the compiler.\n");
         }
         AiPromptFormat::Claude => {
             out.push_str("\n## Claude Code instructions\n\n");
@@ -619,6 +618,7 @@ fn prompt_language_rules() -> Vec<&'static str> {
         "Use native `route method \"path\"` declarations for HTTP endpoints.",
         "Prefer `/users/{id}` path params, not `/users/:id`.",
         "Prefer native routes over `app.get(...)` or `app.patch(...)` calls.",
+        "Keep route bodies inside the Axum lowering subset: const bindings and `return ok(...)` over literals, field access, simple calls, and struct literals.",
         "Do not use null.",
         "Do not use undefined.",
         "Do not throw exceptions.",
@@ -892,20 +892,20 @@ fn native_route_info(file: &str, module: &str, route: &RouteDecl) -> RouteInfo {
     }
 }
 
-fn legacy_route(
-    method: impl Into<String>,
-    path: impl Into<String>,
-    file: &str,
-    module: &str,
-    handler: impl Into<String>,
-    input: impl Into<String>,
-    output: impl Into<String>,
+struct LegacyRouteSpec {
+    method: String,
+    path: String,
+    handler: String,
+    input: String,
+    output: String,
     errors: Vec<String>,
-) -> RouteInfo {
-    let output = output.into();
+}
+
+fn legacy_route(file: &str, module: &str, spec: LegacyRouteSpec) -> RouteInfo {
+    let output = spec.output;
     RouteInfo {
-        method: method.into(),
-        path: path.into(),
+        method: spec.method,
+        path: spec.path,
         file: file.to_string(),
         module: module.to_string(),
         params: BTreeMap::new(),
@@ -919,13 +919,14 @@ fn legacy_route(
                 output.clone()
             },
         },
-        errors: errors
+        errors: spec
+            .errors
             .into_iter()
             .map(|name| RouteErrorInfo { name, status: 500 })
             .collect(),
         effects: Vec::new(),
-        handler: handler.into(),
-        input: input.into(),
+        handler: spec.handler,
+        input: spec.input,
         output,
     }
 }
@@ -956,14 +957,16 @@ fn scan_route_metadata(file: &str, module: &str, source: &str) -> Vec<RouteInfo>
             let parts = rest.split_whitespace().collect::<Vec<_>>();
             if parts.len() >= 2 {
                 current = Some(legacy_route(
-                    parts[0].to_uppercase(),
-                    parts[1].to_string(),
                     file,
                     module,
-                    "",
-                    "",
-                    "",
-                    Vec::new(),
+                    LegacyRouteSpec {
+                        method: parts[0].to_uppercase(),
+                        path: parts[1].to_string(),
+                        handler: String::new(),
+                        input: String::new(),
+                        output: String::new(),
+                        errors: Vec::new(),
+                    },
                 ));
             }
         } else if let Some(route) = current.as_mut() {
@@ -997,14 +1000,16 @@ fn scan_legacy_route_comments(file: &str, module: &str, source: &str) -> Vec<Rou
             let parts = rest.split_whitespace().collect::<Vec<_>>();
             if parts.len() >= 6 && parts[1].starts_with('/') {
                 routes.push(legacy_route(
-                    parts[0].to_uppercase(),
-                    parts[1].to_string(),
                     file,
                     module,
-                    parts[2],
-                    parts[3],
-                    parts[4],
-                    parts[5..].iter().map(|part| (*part).to_string()).collect(),
+                    LegacyRouteSpec {
+                        method: parts[0].to_uppercase(),
+                        path: parts[1].to_string(),
+                        handler: parts[2].to_string(),
+                        input: parts[3].to_string(),
+                        output: parts[4].to_string(),
+                        errors: parts[5..].iter().map(|part| (*part).to_string()).collect(),
+                    },
                 ));
             }
         }
@@ -1030,14 +1035,16 @@ fn scan_app_routes(file: &str, module: &str, source: &str) -> Vec<RouteInfo> {
                 if let Some(path) = quoted_path(rest) {
                     let handler = route_call_handler(rest).unwrap_or_else(|| "inline".to_string());
                     routes.push(legacy_route(
-                        method,
-                        path,
                         file,
                         module,
-                        handler,
-                        "",
-                        "Response",
-                        Vec::new(),
+                        LegacyRouteSpec {
+                            method: method.to_string(),
+                            path,
+                            handler,
+                            input: String::new(),
+                            output: "Response".to_string(),
+                            errors: Vec::new(),
+                        },
                     ));
                 }
             }
@@ -1061,14 +1068,16 @@ fn scan_route_blocks(file: &str, module: &str, source: &str) -> Vec<RouteInfo> {
         };
         let (input, output, errors) = route_generic_types(rest);
         routes.push(legacy_route(
-            method.to_uppercase(),
-            path,
             file,
             module,
-            route_handler_name(method, module),
-            input,
-            output,
-            errors,
+            LegacyRouteSpec {
+                method: method.to_uppercase(),
+                path,
+                handler: route_handler_name(method, module),
+                input,
+                output,
+                errors,
+            },
         ));
     }
     routes
@@ -1128,7 +1137,7 @@ fn route_call_handler(text: &str) -> Option<String> {
 }
 
 fn split_error_list(text: &str) -> Vec<String> {
-    text.split(|ch| ch == ',' || ch == ' ')
+    text.split([',', ' '])
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .map(ToString::to_string)
@@ -1540,6 +1549,7 @@ fn steps_for(module: &str, action: &str, method: &str) -> Vec<String> {
         "Run `vlt ai index`.".to_string(),
         "Run `vlt fmt`.".to_string(),
         "Run `vlt check`.".to_string(),
+        "Run `vlt build`.".to_string(),
         format!("Run `vlt test {module}`."),
     ]
 }

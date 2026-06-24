@@ -55,7 +55,15 @@ The indexer records method, path, file, module, params, query, body type, succes
 
 Legacy `// @route` comments and simple `app.get/post/put/patch/delete(...)` calls are still scanned as fallback metadata, but native route declarations have priority for the same method/path/file.
 
-The route shape is also intentionally close to future Rust/Axum code generation: params map to `axum::extract::Path`, bodies map to `axum::Json<T>`, state maps to request context, success responses map to status plus JSON, and declared errors map to HTTP status responses. v0.1 generates visible route scaffolding and metadata; it does not implement a production HTTP runtime.
+The route shape also drives real Rust/Axum code generation for API builds: params map to `axum::extract::Path`, query params map to `axum::extract::Query`, bodies map to `axum::Json<T>`, state maps to request context, success responses map to status plus JSON, and all routes register on one `axum::Router`.
+
+AI indexing and HTTP codegen are related but separate:
+
+- `vlt ai index` records route metadata for planning, explanation, and prompt generation.
+- `vlt build` lowers supported native route bodies into a generated Cargo/Axum project under `target/volt/rust-project`.
+- Unsupported route body syntax fails with `EHTTPLOWER001` before Rust is written.
+
+Agents should keep route bodies inside the current lowering subset: simple `const` bindings, `return ok(...)`, literals, field access, simple calls, and struct literals.
 
 ## Provider Interface
 
@@ -94,5 +102,6 @@ The default AI context should be compact and inspectable. Provider-backed planni
 - `vlt plan --ai` is a design target, not implemented behavior.
 - `vlt ai prompt` is implemented as deterministic prompt generation only.
 - Route extraction uses native `route` declarations as primary metadata, with comments and simple `app.get/post/put/patch/delete(...)` calls as fallback.
-- Native route codegen is scaffolding only; full Axum handler lowering is not implemented yet.
+- Native route codegen supports a minimal Axum vertical slice, not middleware, auth, database integration, or OpenAPI.
+- Route body lowering is intentionally limited to the supported subset.
 - Call graph data is not complete yet.

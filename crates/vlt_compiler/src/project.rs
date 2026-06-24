@@ -1,4 +1,6 @@
-use crate::{check_program, generate_rust, parse_source, DiagnosticBag, SourceFile};
+use crate::{
+    check_program, generate_axum_server, generate_rust, parse_source, DiagnosticBag, SourceFile,
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
@@ -56,6 +58,48 @@ pub fn compile_file(path: &Path, output_root: &Path) -> ProjectResult<BuildOutpu
     Ok(BuildOutput { rust_file, binary })
 }
 
+pub fn compile_project(root: &Path, output_root: &Path) -> ProjectResult<BuildOutput> {
+    let root = project_root(root);
+    if !is_api_project(&root) {
+        let entrypoint = root.join("src/main.vlt");
+        return compile_file(&entrypoint, output_root);
+    }
+
+    let source = merged_project_source(&root)?;
+    let program = parse_source(&source).map_err(ProjectError::Diagnostics)?;
+    check_program(&program, &source).map_err(ProjectError::Diagnostics)?;
+    let rust = generate_axum_server(&program, &source).map_err(ProjectError::Diagnostics)?;
+
+    let project_name = project_name(&root);
+    let cargo_root = output_root.join("rust-project");
+    let cargo_src = cargo_root.join("src");
+    std::fs::create_dir_all(&cargo_src)?;
+    std::fs::write(cargo_root.join("Cargo.toml"), api_cargo_toml(&project_name))?;
+    let rust_file = cargo_src.join("main.rs");
+    std::fs::write(&rust_file, rust)?;
+
+    let output = Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .current_dir(&cargo_root)
+        .output()?;
+    if !output.status.success() {
+        return Err(ProjectError::Rustc(
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        ));
+    }
+
+    std::fs::create_dir_all(output_root)?;
+    let built_binary = cargo_root
+        .join("target")
+        .join("release")
+        .join(binary_file_name(&project_name));
+    let binary = output_root.join(binary_file_name(&project_name));
+    std::fs::copy(&built_binary, &binary)?;
+
+    Ok(BuildOutput { rust_file, binary })
+}
+
 pub fn run_file(path: &Path, output_root: &Path) -> ProjectResult<String> {
     let build = compile_file(path, output_root)?;
     let output = Command::new(&build.binary).output()?;
@@ -65,4 +109,94 @@ pub fn run_file(path: &Path, output_root: &Path) -> ProjectResult<String> {
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn merged_project_source(root: &Path) -> std::io::Result<SourceFile> {
+    let mut files = Vec::new();
+    collect_volt_files(&root.join("src"), &mut files)?;
+    files.sort();
+
+    let mut source_text = String::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file)?;
+        source_text.push_str(&format!("// file: {}\n", file.display()));
+        source_text.push_str(&text);
+        source_text.push_str("\n\n");
+    }
+
+    Ok(SourceFile::new(root.join("src"), source_text))
+}
+
+fn collect_volt_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_volt_files(&path, files)?;
+        } else if path.extension().is_some_and(|ext| ext == "vlt") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn project_root(start: &Path) -> PathBuf {
+    let mut current = if start.is_file() {
+        start.parent().unwrap_or(start).to_path_buf()
+    } else {
+        start.to_path_buf()
+    };
+    loop {
+        if current.join("volt.toml").exists() {
+            return current;
+        }
+        if !current.pop() {
+            return start.to_path_buf();
+        }
+    }
+}
+
+fn is_api_project(root: &Path) -> bool {
+    std::fs::read_to_string(root.join("volt.toml"))
+        .is_ok_and(|text| text.contains("type = \"api\""))
+}
+
+fn project_name(root: &Path) -> String {
+    let text = std::fs::read_to_string(root.join("volt.toml")).unwrap_or_default();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("name = ") {
+            return rest.trim_matches('"').to_string();
+        }
+    }
+    root.file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "volt-api".to_string())
+}
+
+fn api_cargo_toml(name: &str) -> String {
+    format!(
+        r#"[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = {{ version = "0.8", features = ["json", "tokio", "http1"] }}
+tokio = {{ version = "1", features = ["macros", "rt-multi-thread", "net"] }}
+serde = {{ version = "1", features = ["derive"] }}
+serde_json = "1"
+"#
+    )
+}
+
+fn binary_file_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
 }

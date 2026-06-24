@@ -1,5 +1,8 @@
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command};
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 fn vlt() -> &'static str {
@@ -31,6 +34,8 @@ fn new_api_creates_expected_files() {
         "CLAUDE.md",
         "README.md",
         "src/main.vlt",
+        "src/health/health.routes.vlt",
+        "src/health/health.types.vlt",
         "src/users/users.routes.vlt",
         "src/users/users.service.vlt",
         "src/users/users.repository.vlt",
@@ -88,6 +93,78 @@ fn generated_main_can_be_checked() {
 }
 
 #[test]
+fn generated_api_builds_axum_project_and_serves_health() {
+    let dir = tempdir().unwrap();
+    assert!(run(&["new", "api", "my-api"], dir.path()).status.success());
+    let root = dir.path().join("my-api");
+
+    let output = run(&["build"], &root);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let generated = std::fs::read_to_string(root.join("target/volt/rust-project/src/main.rs"))
+        .expect("generated Rust should exist");
+    assert!(generated.contains("axum::Router"));
+    assert!(generated.contains("tokio::main"));
+    assert!(generated.contains("axum::serve"));
+    assert!(generated.contains(".route(\"/health\", get(get_health_route))"));
+    assert!(generated.contains("async fn get_health_route"));
+    assert!(generated.contains("async fn get_users_id_route"));
+    assert!(generated.contains("async fn post_users_route"));
+
+    let cargo_check = Command::new("cargo")
+        .arg("check")
+        .current_dir(root.join("target/volt/rust-project"))
+        .output()
+        .expect("cargo check should run");
+    assert!(
+        cargo_check.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&cargo_check.stderr)
+    );
+
+    let port = free_port();
+    let mut child = Command::new(root.join("target/volt/my-api"))
+        .env("VLT_ADDR", format!("127.0.0.1:{port}"))
+        .spawn()
+        .expect("server should start");
+    let response = request_health(port, &mut child);
+    assert!(response.contains("200 OK"), "{response}");
+    assert!(response.contains(r#"{"status":"ok"}"#), "{response}");
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn unsupported_route_body_fails_before_rust_is_generated() {
+    let dir = tempdir().unwrap();
+    assert!(run(&["new", "api", "my-api"], dir.path()).status.success());
+    let root = dir.path().join("my-api");
+    std::fs::write(
+        root.join("src/health/health.routes.vlt"),
+        r#"route get "/health"
+  ok 200 HealthResponse
+{
+  if (true) {
+    return ok(HealthResponse {
+      status: "ok"
+    })
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run(&["build"], &root);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("EHTTPLOWER001"), "{stderr}");
+}
+
+#[test]
 fn ai_summary_prints_project_summary() {
     let dir = tempdir().unwrap();
     assert!(run(&["new", "api", "my-api"], dir.path()).status.success());
@@ -103,6 +180,33 @@ fn ai_summary_prints_project_summary() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("# Volt AI Context"));
     assert!(stdout.contains("# Volt Project Summary"));
+}
+
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn request_health(port: u16, child: &mut Child) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
+            stream
+                .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            return response;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("server did not accept connections");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
@@ -349,6 +453,7 @@ fn ai_prompt_generates_useful_generic_prompt() {
     assert!(stdout.contains("src/users/users.service.vlt"));
     assert!(stdout.contains("## Validation commands"));
     assert!(stdout.contains("vlt ai index"));
+    assert!(stdout.contains("vlt build"));
     assert!(stdout.contains("Use Result<T, E> for fallible operations."));
     assert!(stdout.contains("Prefer native routes over `app.get(...)` or `app.patch(...)` calls."));
     assert!(stdout.contains("Do not call external AI APIs."));

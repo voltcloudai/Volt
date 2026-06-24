@@ -102,7 +102,19 @@ Rules:
 - Success statuses must be `100..599`; error statuses must be `400..599`.
 - Every `{pathParam}` must be declared in `params`, and every `params` field must appear in the path.
 
-Route declarations map naturally to Rust/Axum: path params become `axum::extract::Path`, declared bodies become `axum::Json<T>`, state becomes request context, `ok` statuses become `StatusCode` plus JSON responses, and declared errors map to HTTP status responses. v0.1 emits visible Rust scaffolding rather than a production HTTP framework.
+Route declarations lower to Rust/Axum in API builds: path params become `axum::extract::Path`, query params become `axum::extract::Query`, declared bodies become `axum::Json<T>`, state becomes request context, `ok` statuses become `StatusCode` plus JSON responses, and routes are registered on one `axum::Router`.
+
+The current route body lowering subset is intentionally small:
+
+- `return ok(<struct literal>)`
+- `return ok(<identifier>)`
+- simple `const name = <expr>`
+- `params.id`, `query.page`, and `body.email` field access
+- string and integer literals
+- struct literals
+- simple function calls
+
+Unsupported route body syntax produces `EHTTPLOWER001`.
 
 ## Supported Types
 

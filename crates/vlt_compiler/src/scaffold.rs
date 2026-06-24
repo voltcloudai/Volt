@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 pub fn create_api_project(base: &Path, name: &str) -> std::io::Result<PathBuf> {
     let root = base.join(name);
+    std::fs::create_dir_all(root.join("src/health"))?;
     std::fs::create_dir_all(root.join("src/users"))?;
     std::fs::create_dir_all(root.join(".ai/tasks"))?;
     std::fs::create_dir_all(root.join(".ai/files"))?;
@@ -11,6 +12,8 @@ pub fn create_api_project(base: &Path, name: &str) -> std::io::Result<PathBuf> {
     write(root.join("CLAUDE.md"), CLAUDE)?;
     write(root.join("README.md"), &readme(name))?;
     write(root.join("src/main.vlt"), MAIN)?;
+    write(root.join("src/health/health.routes.vlt"), HEALTH_ROUTES)?;
+    write(root.join("src/health/health.types.vlt"), HEALTH_TYPES)?;
     write(root.join("src/users/users.routes.vlt"), USERS_ROUTES)?;
     write(root.join("src/users/users.service.vlt"), USERS_SERVICE)?;
     write(
@@ -61,6 +64,9 @@ Generated Volt API project.
 ```sh
 vlt ai index
 vlt ai summary
+vlt build
+./target/volt/{name}
+curl http://localhost:8080/health
 vlt plan "add new update user endpoint"
 ```
 
@@ -77,15 +83,17 @@ Project name: {name}
 Entrypoint: src/main.vlt
 Project type: api
 Modules:
+- health
 - users
 Routes:
 - GET /health
 - GET /users/{{id}}
 Types:
+- HealthResponse
 - User
 - CreateUserInput
 Commands:
-- Check: `vlt check src/main.vlt`
+- Build: `vlt build`
 - Format: `vlt fmt src/main.vlt`
 - AI index: `vlt ai index`
 - Plan task: `vlt plan "<task>"`
@@ -101,32 +109,41 @@ const AGENTS: &str = r#"# Agent Instructions
 - Use Result<T, E> for fallible operations.
 - Keep route input/output types explicit.
 - Prefer native `route method "path"` declarations over `app.get(...)`.
+- Keep route bodies inside the supported Axum lowering subset until the compiler grows.
+- Run `vlt build` after route changes.
 - Run `vlt ai index` after changing source structure.
 "#;
 
 const CLAUDE: &str = r#"# Claude Instructions
 
 Use `.ai/project.md`, `.ai/symbols.json`, and `.ai/routes.json` before reading source files. Prefer compact context first, then inspect only relevant modules.
+
+- Prefer native `route method "path"` declarations.
+- Keep route bodies inside the supported Axum lowering subset.
+- Run `vlt build` after route changes.
 "#;
 
-const MAIN: &str = r#"type HealthResponse = {
-  status: string
-}
-
-route get "/health"
-  ok 200 HealthResponse
-{
-  return ok(HealthResponse {
-    status: "ok"
-  })
-}
-
+const MAIN: &str = r#"
 function healthHandler(): string {
   return "ok"
 }
 
 function main(): void {
   print(healthHandler())
+}
+"#;
+
+const HEALTH_ROUTES: &str = r#"route get "/health"
+  ok 200 HealthResponse
+{
+  return ok(HealthResponse {
+    status: "ok"
+  })
+}
+"#;
+
+const HEALTH_TYPES: &str = r#"type HealthResponse = {
+  status: string
 }
 "#;
 
@@ -138,26 +155,60 @@ const USERS_ROUTES: &str = r#"route get "/users/{id}"
     DatabaseError 500
   }
 {
-  const user = try getUser(params.id, ctx)
-  return ok(user)
+  return ok(User {
+    id: params.id
+    email: "demo@test.com"
+    name: "Demo User"
+  })
+}
+
+route post "/users"
+  body CreateUserInput
+  ok 201 User
+  errors {
+    InvalidEmail 400
+    DatabaseError 500
+  }
+{
+  return ok(User {
+    id: 1
+    email: body.email
+    name: body.name
+  })
 }
 "#;
 
 const USERS_SERVICE: &str = r#"function getUser(id: u64): Result<User, UserError> {
-  return err("not implemented")
+  return ok(User {
+    id: id
+    email: "demo@test.com"
+    name: "Demo User"
+  })
 }
 
 function createUser(input: CreateUserInput): Result<User, UserError> {
-  return err("not implemented")
+  return ok(User {
+    id: 1
+    email: input.email
+    name: input.name
+  })
 }
 "#;
 
 const USERS_REPOSITORY: &str = r#"function findUserById(id: u64): Result<User, UserError> {
-  return err("not implemented")
+  return ok(User {
+    id: id
+    email: "demo@test.com"
+    name: "Demo User"
+  })
 }
 
 function insertUser(input: CreateUserInput): Result<User, UserError> {
-  return err("not implemented")
+  return ok(User {
+    id: 1
+    email: input.email
+    name: input.name
+  })
 }
 "#;
 
@@ -225,6 +276,8 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 - Keep route input/output types explicit.
 - Use native `route method "path"` declarations for HTTP endpoints.
 - Prefer `/users/{id}` path params over `/users/:id`.
+- Keep route bodies inside the supported Axum lowering subset: const bindings and `return ok(...)` over literals, field access, calls, and struct literals.
+- Run `vlt build` after route changes.
 - Run `vlt ai index` after changing source structure.
 "#;
 

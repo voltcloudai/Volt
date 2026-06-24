@@ -1,0 +1,12 @@
+function divide(a: i32, b: i32): Result<i32, string> {
+  if (b === 0) {
+    return err("division by zero")
+  }
+
+  return ok(a / b)
+}
+
+function main(): void {
+  const result = divide(10, 2)
+  print(result)
+}

@@ -1,0 +1,15 @@
+[package]
+name = "vlt_cli"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "vlt"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+vlt_compiler = { path = "../vlt_compiler" }
+
+[dev-dependencies]
+tempfile.workspace = true

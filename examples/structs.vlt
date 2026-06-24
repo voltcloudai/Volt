@@ -1,0 +1,15 @@
+type User = {
+  id: u64
+  email: string
+  name: string
+}
+
+function main(): void {
+  const user = User {
+    id: 1
+    email: "carlos@test.com"
+    name: "Carlos"
+  }
+
+  print(user.email)
+}

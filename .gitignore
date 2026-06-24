@@ -1,0 +1,20 @@
+# Rust build artifacts
+/target/
+
+# Volt generated build outputs
+/target/volt/
+
+# Local generated prompt files
+*.prompt.md
+
+# macOS and editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and temporary files
+*.log
+tmp/
+temp/

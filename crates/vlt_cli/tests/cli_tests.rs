@@ -112,6 +112,9 @@ fn generated_api_builds_axum_project_and_serves_health() {
 
     let generated = std::fs::read_to_string(root.join("target/volt/rust-project/src/main.rs"))
         .expect("generated Rust should exist");
+    assert!(generated.contains("#![allow(non_snake_case)]"));
+    assert!(generated.contains("#![allow(unused_variables)]"));
+    assert!(generated.contains("#![allow(dead_code)]"));
     assert!(generated.contains("axum::Router"));
     assert!(generated.contains("tokio::main"));
     assert!(generated.contains("axum::serve"));
@@ -138,7 +141,7 @@ fn generated_api_builds_axum_project_and_serves_health() {
         .env("VLT_ADDR", format!("127.0.0.1:{port}"))
         .spawn()
         .expect("server should start");
-    let response = request_health(port, &mut child);
+    let response = request_path(port, "/health", &mut child);
     assert!(response.contains("200 OK"), "{response}");
     assert!(response.contains(r#"{"status":"ok"}"#), "{response}");
     let _ = child.kill();
@@ -171,6 +174,7 @@ route get "/health"
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("EHTTPLOWER001"), "{stderr}");
+    assert!(stderr.contains("handler myRouteHandler"), "{stderr}");
 }
 
 #[test]
@@ -199,13 +203,13 @@ fn free_port() -> u16 {
         .port()
 }
 
-fn request_health(port: u16, child: &mut Child) -> String {
+fn request_path(port: u16, path: &str, child: &mut Child) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
-            stream
-                .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-                .unwrap();
+            let request =
+                format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+            stream.write_all(request.as_bytes()).unwrap();
             let mut response = String::new();
             stream.read_to_string(&mut response).unwrap();
             return response;
@@ -216,6 +220,258 @@ fn request_health(port: u16, child: &mut Child) -> String {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+fn write_realistic_users_module(root: &Path) {
+    std::fs::write(
+        root.join("src/users/users.types.vlt"),
+        r#"export type User = {
+  id: u64
+  email: string
+  name: string
+}
+
+export type UpdateUserInput = {
+  email: string
+  name: string
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/users/users.errors.vlt"),
+        r#"export error UserError {
+  UserNotFound { message: string }
+  InvalidEmail { message: string }
+  EmailAlreadyExists { email: string }
+  DatabaseError { message: string }
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/users/users.repository.vlt"),
+        r#"import { User } from "./users.types"
+import { UserError } from "./users.errors"
+
+export function findUserById(
+  id: u64,
+  ctx: Ctx
+): Result<Option<User>, UserError> {
+  if (id === 1) {
+    return ok(User({
+      id: 1,
+      email: "demo@test.com",
+      name: "Demo User"
+    }))
+  }
+
+  return ok(none)
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/users/users.service.vlt"),
+        r#"import { User, UpdateUserInput } from "./users.types"
+import { UserError } from "./users.errors"
+import { findUserById } from "./users.repository"
+
+export function updateUserRoute(
+  params: PatchUsersIdParams,
+  body: UpdateUserInput,
+  ctx: Ctx
+): Result<User, UserError> {
+  const user = try findUserById(params.id, ctx)
+
+  if (!user) {
+    return err(UserError.UserNotFound({
+      message: "User not found"
+    }))
+  }
+
+  return ok(User({
+    id: user.id,
+    email: body.email,
+    name: body.name
+  }))
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/users/users.routes.vlt"),
+        r#"import { User, UpdateUserInput } from "./users.types"
+import { UserError } from "./users.errors"
+import { updateUserRoute } from "./users.service"
+
+route patch "/users/{id}"
+  params { id: u64 }
+  body UpdateUserInput
+  ok 200 User
+  errors UserError {
+    UserNotFound 404
+    InvalidEmail 400
+    EmailAlreadyExists 409
+    DatabaseError 500
+  }
+  effects [db, log]
+  handler updateUserRoute
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn realistic_multifile_handler_api_builds_and_generates_dependencies() {
+    let dir = tempdir().unwrap();
+    assert!(run(&["new", "api", "my-api"], dir.path()).status.success());
+    let root = dir.path().join("my-api");
+    write_realistic_users_module(&root);
+
+    let index = run(&["ai", "index"], &root);
+    assert!(
+        index.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&index.stderr)
+    );
+
+    let routes = std::fs::read_to_string(root.join(".ai/routes.json")).unwrap();
+    assert!(routes.contains("\"method\": \"PATCH\""));
+    assert!(routes.contains("\"path\": \"/users/{id}\""));
+    assert!(routes.contains("\"body\": \"UpdateUserInput\""));
+    assert!(routes.contains("\"errorType\": \"UserError\""));
+    assert!(routes.contains("\"effects\""));
+    assert!(routes.contains("\"db\""));
+    assert!(routes.contains("\"log\""));
+    assert!(routes.contains("\"handler\": \"updateUserRoute\""));
+
+    let source_map = std::fs::read_to_string(root.join(".ai/source-map.json")).unwrap();
+    assert!(source_map.contains("\"path\": \"src/users/users.routes.vlt\""));
+    assert!(source_map.contains("\"path\": \"src/users/users.service.vlt\""));
+    assert!(source_map.contains("\"path\": \"src/users/users.repository.vlt\""));
+
+    let explain = run(&["explain", "updateUserRoute"], &root);
+    assert!(
+        explain.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&explain.stderr)
+    );
+    let explain_stdout = String::from_utf8_lossy(&explain.stdout);
+    assert!(explain_stdout.contains("Related routes: [\"PATCH /users/{id}\"]"));
+
+    let output = run(&["build"], &root);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let generated = std::fs::read_to_string(root.join("target/volt/rust-project/src/main.rs"))
+        .expect("generated Rust should exist");
+    assert!(generated.contains("#![allow(non_snake_case)]"));
+    assert!(generated.contains("pub struct PatchUsersIdParams"));
+    assert!(generated.contains("fn findUserById"));
+    assert!(generated.contains("fn updateUserRoute"));
+    assert!(generated.contains("async fn patch_users_id_route"));
+    assert!(generated.contains("match updateUserRoute(params, body, ctx)"));
+    assert!(generated.contains("patch_users_id_route_error_status"));
+    assert!(generated.contains("UserError::UserNotFound { .. } => StatusCode::NOT_FOUND"));
+    assert!(generated.contains("let user = if let Some(user) = user"));
+
+    let cargo_check = Command::new("cargo")
+        .arg("check")
+        .current_dir(root.join("target/volt/rust-project"))
+        .output()
+        .expect("cargo check should run");
+    assert!(
+        cargo_check.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&cargo_check.stderr)
+    );
+}
+
+#[test]
+fn handler_route_typed_error_returns_http_status() {
+    let dir = tempdir().unwrap();
+    assert!(run(&["new", "api", "my-api"], dir.path()).status.success());
+    let root = dir.path().join("my-api");
+    std::fs::write(
+        root.join("src/users/users.types.vlt"),
+        r#"export type User = {
+  id: u64
+  email: string
+  name: string
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/users/users.errors.vlt"),
+        r#"export error UserError {
+  UserNotFound { message: string }
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/users/users.repository.vlt"),
+        r#"function usersRepositoryPlaceholder(): void {
+  print("placeholder")
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/users/users.service.vlt"),
+        r#"import { User } from "./users.types"
+import { UserError } from "./users.errors"
+
+export function getUserRoute(
+  params: GetUsersIdParams,
+  ctx: Ctx
+): Result<User, UserError> {
+  return err(UserError.UserNotFound({
+    message: "User not found"
+  }))
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/users/users.routes.vlt"),
+        r#"import { User } from "./users.types"
+import { UserError } from "./users.errors"
+import { getUserRoute } from "./users.service"
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  errors UserError {
+    UserNotFound 404
+  }
+  handler getUserRoute
+"#,
+    )
+    .unwrap();
+
+    let output = run(&["build"], &root);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let port = free_port();
+    let mut child = Command::new(root.join("target/volt/my-api"))
+        .env("VLT_ADDR", format!("127.0.0.1:{port}"))
+        .spawn()
+        .expect("server should start");
+    let response = request_path(port, "/users/999", &mut child);
+    assert!(response.contains("404 Not Found"), "{response}");
+    assert!(response.contains("UserNotFound"), "{response}");
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[test]
@@ -461,6 +717,9 @@ fn ai_prompt_generates_useful_generic_prompt() {
     assert!(stdout.contains("handler updateUserRoute"));
     assert!(stdout.contains("src/users/users.routes.vlt"));
     assert!(stdout.contains("src/users/users.service.vlt"));
+    assert!(stdout.contains("Treat route declarations as HTTP contracts"));
+    assert!(stdout.contains("Edit `*.routes.vlt` for HTTP contract changes."));
+    assert!(stdout.contains("Edit `*.service.vlt` or the handler function for business logic."));
     assert!(stdout.contains("## Validation commands"));
     assert!(stdout.contains("vlt ai index"));
     assert!(stdout.contains("vlt build"));

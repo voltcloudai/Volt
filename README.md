@@ -139,9 +139,9 @@ function updateUserRoute(
 }
 ```
 
-Supported methods are `get`, `post`, `put`, `patch`, and `delete`. Path params use `{id}` syntax so planner output and generated prompts stay consistent with the language, not Express-style `:id` paths. Handler arguments are ordered as `params`, `query`, `body`, then `ctx`, omitting inputs the route does not declare. Generated inline params/query types use stable names such as `GetUsersIdParams`, `PatchUsersIdParams`, and `GetUsersQuery`.
+Supported methods are `get`, `post`, `put`, `patch`, and `delete`. Path params use `{id}` syntax so planner output and generated prompts stay consistent with the language, not Express-style `:id` paths. Handler arguments are ordered as `params`, `query`, `body`, then `ctx`, omitting inputs the route does not declare. Generated route params/query types use stable names such as `GetUsersIdParams`, `PatchUsersIdParams`, and `GetUsersQuery`.
 
-Native routes generate structured AI metadata and real Rust/Axum handlers in API builds. Path params become `axum::extract::Path`, query params become `axum::extract::Query`, request bodies become `axum::Json`, success returns use `StatusCode` plus JSON, typed `Err(error)` values map through the route error status helper, and routes are registered on one `axum::Router`.
+Native routes generate structured AI metadata and real Rust/Axum handlers in API builds. Path params become `axum::extract::Path`, query params become `axum::extract::Query`, request bodies become `axum::Json`, `Ok(value)` becomes the success status plus JSON, typed `Err(error)` values map through the route error status helper to status plus JSON, and routes are registered on one `axum::Router`.
 
 Inline route bodies are still supported for very small endpoints such as `/health`. Current inline body lowering supports:
 

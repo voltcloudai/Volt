@@ -169,6 +169,9 @@ impl fmt::Display for DiagnosticBag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for diagnostic in &self.diagnostics {
             writeln!(f, "error[{}]: {}", diagnostic.code, diagnostic.message)?;
+            if let Some(hint) = &diagnostic.hint {
+                writeln!(f, "  help: {hint}")?;
+            }
         }
         Ok(())
     }

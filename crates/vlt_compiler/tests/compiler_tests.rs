@@ -124,6 +124,22 @@ function main(): void {
 }
 
 #[test]
+fn generated_rust_includes_targeted_lint_allows() {
+    let program = parse(
+        r#"
+function getUserRoute(): void {
+  print("ok")
+}
+"#,
+    );
+    let rust = generate_rust(&program);
+    assert!(rust.contains("#![allow(non_snake_case)]"));
+    assert!(rust.contains("#![allow(unused_variables)]"));
+    assert!(rust.contains("#![allow(dead_code)]"));
+    assert!(rust.contains("#![allow(unused_imports)]"));
+}
+
+#[test]
 fn runs_hello_example() {
     let dir = tempdir().unwrap();
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -976,6 +992,33 @@ route get "/users/{id}"
 }
 
 #[test]
+fn checker_reports_route_handler_error_type_mismatch() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+error UserError { UserNotFound { message: string } }
+error OtherError { Other { message: string } }
+
+function getUserRoute(params: GetUsersIdParams, ctx: Ctx): Result<User, OtherError> {
+  return err(OtherError.Other({ message: "wrong" }))
+}
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  errors UserError { UserNotFound 404 }
+  handler getUserRoute
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_program(&program, &source).expect_err("error type should mismatch");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP017"));
+}
+
+#[test]
 fn checker_reports_route_handler_params_mismatch() {
     let source = source(
         r#"
@@ -995,6 +1038,92 @@ route get "/users/{id}"
     );
     let program = parse_source(&source).unwrap();
     let diagnostics = check_program(&program, &source).expect_err("params should mismatch");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP018"));
+}
+
+#[test]
+fn checker_reports_route_handler_missing_body() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+type UpdateUserInput = { name: string }
+error UserError { UserNotFound { message: string } }
+
+function updateUserRoute(params: PatchUsersIdParams, ctx: Ctx): Result<User, UserError> {
+  return ok(User({ id: params.id }))
+}
+
+route patch "/users/{id}"
+  params { id: u64 }
+  body UpdateUserInput
+  ok 200 User
+  errors UserError { UserNotFound 404 }
+  handler updateUserRoute
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_program(&program, &source).expect_err("body should be required");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP018"));
+}
+
+#[test]
+fn checker_reports_route_handler_missing_ctx() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+error UserError { UserNotFound { message: string } }
+
+function getUserRoute(params: GetUsersIdParams): Result<User, UserError> {
+  return ok(User({ id: params.id }))
+}
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  errors UserError { UserNotFound 404 }
+  handler getUserRoute
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_program(&program, &source).expect_err("ctx should be required");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP018"));
+}
+
+#[test]
+fn checker_reports_route_handler_wrong_argument_order() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+type UpdateUserInput = { name: string }
+error UserError { UserNotFound { message: string } }
+
+function updateUserRoute(
+  body: UpdateUserInput,
+  params: PatchUsersIdParams,
+  ctx: Ctx
+): Result<User, UserError> {
+  return ok(User({ id: params.id }))
+}
+
+route patch "/users/{id}"
+  params { id: u64 }
+  body UpdateUserInput
+  ok 200 User
+  errors UserError { UserNotFound 404 }
+  handler updateUserRoute
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_program(&program, &source).expect_err("argument order should mismatch");
     assert!(diagnostics
         .all()
         .iter()
@@ -1063,6 +1192,7 @@ route patch "/users/{id}"
     let program = parse_source(&source).unwrap();
     check_program(&program, &source).expect("program should check");
     let rust = generate_axum_server(&program, &source).expect("axum should lower");
+    assert!(rust.contains("#![allow(non_snake_case)]"));
     assert!(rust.contains("pub struct PatchUsersIdParams"));
     assert!(rust.contains("fn updateUserRoute(params: PatchUsersIdParams, body: UpdateUserInput, ctx: RequestCtx) -> Result<User, UserError>"));
     assert!(rust.contains("match updateUserRoute(params, body, ctx)"));

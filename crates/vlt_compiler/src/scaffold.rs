@@ -70,7 +70,7 @@ curl http://localhost:8080/health
 vlt plan "add new update user endpoint"
 ```
 
-The generated route files use Volt's native `route method "path"` syntax so AI tools can index API shape directly from source.
+The generated route files use Volt's native `route method "path"` syntax as HTTP contracts. Business logic lives in handler functions so AI tools can index API shape directly from source.
 "#
     )
 }
@@ -88,6 +88,7 @@ Modules:
 Routes:
 - GET /health
 - GET /users/{{id}}
+- POST /users
 Types:
 - HealthResponse
 - User
@@ -112,7 +113,9 @@ const AGENTS: &str = r#"# Agent Instructions
 - Keep route input/output types explicit.
 - Prefer native `route method "path"` declarations over `app.get(...)`.
 - Treat route declarations as HTTP contracts and put business logic in handler functions.
+- Use handler argument order: params, query, body, ctx.
 - Keep inline route bodies tiny and inside the supported Axum lowering subset until the compiler grows.
+- Current limits: no DB integration, middleware/auth, OpenAPI, public match, or JS truthiness.
 - Run `vlt build` after route changes.
 - Run `vlt ai index` after changing source structure.
 "#;
@@ -123,6 +126,7 @@ Use `.ai/project.md`, `.ai/symbols.json`, and `.ai/routes.json` before reading s
 
 - Prefer native `route method "path"` declarations.
 - Treat route declarations as HTTP contracts and put business logic in handler functions.
+- Use handler argument order: params, query, body, ctx.
 - Keep inline route bodies tiny and inside the supported Axum lowering subset.
 - Run `vlt build` after route changes.
 "#;
@@ -288,7 +292,10 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 - Use native `route method "path"` declarations for HTTP endpoints.
 - Prefer `/users/{id}` path params over `/users/:id`.
 - Use handler argument order: params, query, body, ctx.
+- Generated route input type names are stable, for example `GetUsersIdParams`, `PatchUsersIdParams`, and `GetUsersQuery`.
+- `Ok(value)` becomes the route success status plus JSON; `Err(error)` maps through typed route errors to an HTTP status plus JSON.
 - Keep inline route bodies tiny and inside the supported Axum lowering subset: const bindings and `return ok(...)` over literals, field access, calls, and struct literals.
+- Current limits: no DB integration, middleware/auth, OpenAPI, public match, production-ready HTTP framework, or JavaScript truthiness.
 - Run `vlt build` after route changes.
 - Run `vlt ai index` after changing source structure.
 "#;
@@ -336,5 +343,9 @@ route get "/users/{id}"
     DatabaseError 500
   }
   handler getUserRoute
+
+function getUserRoute(params: GetUsersIdParams, ctx: Ctx): Result<User, UserError> {
+  return err(UserError.UserNotFound({ message: "not implemented" }))
+}
 ```
 "#;

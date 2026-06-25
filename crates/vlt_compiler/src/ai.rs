@@ -1,4 +1,4 @@
-use crate::ast::{Decl, FunctionDecl, HttpMethod, RouteDecl, TypeDecl};
+use crate::ast::{Decl, ErrorDecl, FunctionDecl, HttpMethod, RouteDecl, TypeDecl};
 use crate::diagnostics::SourceFile;
 use crate::parser::parse_source;
 use crate::scaffold::{ARCHITECTURE, COMMANDS, EXAMPLES, LANGUAGE_RULES, MEMORY_MODEL};
@@ -48,6 +48,8 @@ pub struct RouteInfo {
     pub body: Option<String>,
     #[serde(default)]
     pub success: RouteSuccessInfo,
+    #[serde(default, rename = "errorType", skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<RouteErrorInfo>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -87,6 +89,14 @@ pub struct ErrorInfo {
     pub name: String,
     pub file: String,
     pub module: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<ErrorVariantInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorVariantInfo {
+    pub name: String,
+    pub fields: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,15 +177,16 @@ pub fn index_project(root: &Path) -> std::io::Result<AiIndex> {
         let module = file_module(&rel);
         let kind = file_kind(&rel);
 
-        let (types, functions) = collect_symbols(&rel, &module, &source_text);
+        let (types, functions, declared_errors) = collect_symbols(&rel, &module, &source_text);
         let mut routes = collect_routes(&rel, &module, &source_text);
         dedupe_routes(&mut routes);
 
         index.types.extend(types.clone());
         index.functions.extend(functions.clone());
         index.routes.extend(routes.clone());
+        index.errors.extend(declared_errors.clone());
 
-        let errors = file_errors(&types, &routes);
+        let errors = file_errors(&types, &routes, &declared_errors);
         source_map.files.push(FileSummary {
             path: rel.clone(),
             module,
@@ -206,7 +217,7 @@ pub fn index_project(root: &Path) -> std::io::Result<AiIndex> {
         .routes
         .sort_by(|a, b| a.path.cmp(&b.path).then(a.method.cmp(&b.method)));
     dedupe_routes(&mut index.routes);
-    index.errors = infer_errors(&index);
+    merge_inferred_errors(&mut index);
 
     write_ai_files(&root, &index, &source_map)?;
     Ok(index)
@@ -313,6 +324,22 @@ pub fn explain_symbol(root: &Path, symbol: &str) -> std::io::Result<Option<Strin
             ty.name,
             ty.fields,
             routes_for_type(&index, &ty.name)
+        )));
+    }
+
+    if let Some(error) = index.errors.iter().find(|error| error.name == symbol) {
+        let variants = error
+            .variants
+            .iter()
+            .map(|variant| format!("{} {:?}", variant.name, variant.fields))
+            .collect::<Vec<_>>();
+        return Ok(Some(format!(
+            "# Symbol: {symbol}\n\nFile: {}\nModule: {}\nSignature: error {}\nVariants: {:?}\nRelated routes: {:?}\n",
+            error.file,
+            error.module,
+            error.name,
+            variants,
+            routes_for_type(&index, &error.name)
         )));
     }
 
@@ -433,6 +460,9 @@ fn render_plan(context: &PlanContext) -> String {
     for error in &context.errors_to_consider {
         out.push_str(&format!("- {error}\n"));
     }
+    out.push_str("\nSuggested route error block:\n");
+    out.push_str(&route_error_block(context));
+    out.push('\n');
     out.push_str("\nRelevant existing context:\n");
     for item in &context.existing_context {
         out.push_str(&format!("- {item}\n"));
@@ -495,6 +525,10 @@ fn render_prompt(context: &PlanContext, format: AiPromptFormat) -> String {
     append_bullets(&mut out, &context.types_to_update);
     out.push_str("\n## Errors to consider\n\n");
     append_bullets(&mut out, &context.errors_to_consider);
+    out.push_str("\n## Suggested route error block\n\n");
+    out.push_str("```ts\n");
+    out.push_str(&route_error_block(context));
+    out.push_str("```\n");
     out.push_str("\n## Expected behavior\n\n");
     out.push_str(&expected_behavior(&context.module));
     out.push_str("\n\n## Volt language rules\n\n");
@@ -612,6 +646,29 @@ fn expected_behavior(module: &str) -> String {
     }
 }
 
+fn route_error_block(context: &PlanContext) -> String {
+    let error_type = format!("{}Error", singular_pascal(&context.module));
+    let mut out = format!("errors {error_type} {{\n");
+    for error in &context.errors_to_consider {
+        out.push_str(&format!(
+            "  {error} {}\n",
+            suggested_status_for_error(error)
+        ));
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn suggested_status_for_error(error: &str) -> u16 {
+    match error {
+        "InvalidEmail" | "ValidationError" => 400,
+        "UserNotFound" | "NotFound" => 404,
+        "EmailAlreadyExists" | "Conflict" => 409,
+        "DatabaseError" => 500,
+        _ => 500,
+    }
+}
+
 fn prompt_language_rules() -> Vec<&'static str> {
     vec![
         "Use TypeScript-like Volt syntax.",
@@ -623,7 +680,13 @@ fn prompt_language_rules() -> Vec<&'static str> {
         "Do not use undefined.",
         "Do not throw exceptions.",
         "Use Result<T, E> for fallible operations.",
-        "Use Option<T> for optional values.",
+        "Use Option<T> for absence and prefer `return none` for absent values.",
+        "Prefer returning a plain value from Option<T> functions; the compiler wraps it.",
+        "Use `if (value)` and `if (!value)` to narrow Option<T> values.",
+        "Do not use truthiness for strings, numbers, or objects; use explicit comparisons.",
+        "Use `error` declarations for domain errors instead of random strings.",
+        "Prefer Result<T, DomainError> and call-style construction like `UserError.UserNotFound({ message: \"...\" })`.",
+        "Prefer typed route errors: `errors UserError { UserNotFound 404 }`.",
         "Use explicit input/output route types.",
         "Use ctx.arena for request-scoped allocations when needed.",
         "Keep generated code simple and explicit.",
@@ -700,24 +763,27 @@ fn collect_symbols(
     file: &str,
     module: &str,
     source_text: &str,
-) -> (Vec<TypeInfo>, Vec<FunctionInfo>) {
+) -> (Vec<TypeInfo>, Vec<FunctionInfo>, Vec<ErrorInfo>) {
     let source = SourceFile::new(file, source_text.to_string());
     if let Ok(program) = parse_source(&source) {
         let mut types = Vec::new();
         let mut functions = Vec::new();
+        let mut errors = Vec::new();
         for declaration in &program.declarations {
             match declaration {
                 Decl::Import(_) => {}
                 Decl::Type(type_decl) => types.push(type_info(file, module, type_decl)),
                 Decl::Function(function) => functions.push(function_info(file, module, function)),
+                Decl::Error(error_decl) => errors.push(error_info(file, module, error_decl)),
                 Decl::Route(_) => {}
             }
         }
-        (types, functions)
+        (types, functions, errors)
     } else {
         (
             scan_types(file, module, source_text),
             scan_functions(file, module, source_text),
+            Vec::new(),
         )
     }
 }
@@ -743,6 +809,26 @@ fn function_info(file: &str, module: &str, function: &FunctionDecl) -> FunctionI
         module: module.to_string(),
         signature: function_signature(function),
         effects: Vec::new(),
+    }
+}
+
+fn error_info(file: &str, module: &str, error_decl: &ErrorDecl) -> ErrorInfo {
+    ErrorInfo {
+        name: error_decl.name.clone(),
+        file: file.to_string(),
+        module: module.to_string(),
+        variants: error_decl
+            .variants
+            .iter()
+            .map(|variant| ErrorVariantInfo {
+                name: variant.name.clone(),
+                fields: variant
+                    .fields
+                    .iter()
+                    .map(|field| (field.name.clone(), type_to_string(&field.ty)))
+                    .collect(),
+            })
+            .collect(),
     }
 }
 
@@ -878,6 +964,7 @@ fn native_route_info(file: &str, module: &str, route: &RouteDecl) -> RouteInfo {
             status: route.ok_status,
             ty: type_to_string(&route.ok_type),
         },
+        error_type: route.error_type.as_ref().map(type_to_string),
         errors: route
             .errors
             .iter()
@@ -920,6 +1007,7 @@ fn legacy_route(file: &str, module: &str, spec: LegacyRouteSpec) -> RouteInfo {
                 output.clone()
             },
         },
+        error_type: None,
         errors: spec
             .errors
             .into_iter()
@@ -1150,18 +1238,19 @@ fn dedupe_routes(routes: &mut Vec<RouteInfo>) {
     routes.retain(|route| seen.insert(route_key(route)));
 }
 
-fn infer_errors(index: &AiIndex) -> Vec<ErrorInfo> {
+fn merge_inferred_errors(index: &mut AiIndex) {
     let mut errors = BTreeMap::new();
+    for error in &index.errors {
+        errors.insert(error.name.clone(), error.clone());
+    }
     for ty in &index.types {
         if ty.name.ends_with("Error") {
-            errors.insert(
-                ty.name.clone(),
-                ErrorInfo {
-                    name: ty.name.clone(),
-                    file: ty.file.clone(),
-                    module: ty.module.clone(),
-                },
-            );
+            errors.entry(ty.name.clone()).or_insert_with(|| ErrorInfo {
+                name: ty.name.clone(),
+                file: ty.file.clone(),
+                module: ty.module.clone(),
+                variants: Vec::new(),
+            });
         }
     }
     for route in &index.routes {
@@ -1170,20 +1259,31 @@ fn infer_errors(index: &AiIndex) -> Vec<ErrorInfo> {
                 name: error.name.clone(),
                 file: route.file.clone(),
                 module: route.module.clone(),
+                variants: Vec::new(),
             });
         }
     }
-    errors.into_values().collect()
+    index.errors = errors.into_values().collect();
 }
 
-fn file_errors(types: &[TypeInfo], routes: &[RouteInfo]) -> Vec<String> {
+fn file_errors(
+    types: &[TypeInfo],
+    routes: &[RouteInfo],
+    declared_errors: &[ErrorInfo],
+) -> Vec<String> {
     let mut errors = BTreeSet::new();
     for ty in types {
         if ty.name.ends_with("Error") {
             errors.insert(ty.name.clone());
         }
     }
+    for error in declared_errors {
+        errors.insert(error.name.clone());
+    }
     for route in routes {
+        if let Some(error_type) = &route.error_type {
+            errors.insert(error_type.clone());
+        }
         for error in &route.errors {
             errors.insert(error.name.clone());
         }
@@ -1209,6 +1309,7 @@ fn routes_for_type(index: &AiIndex, ty: &str) -> Vec<String> {
                 || route.output == ty
                 || route.body.as_deref() == Some(ty)
                 || route.success.ty == ty
+                || route.error_type.as_deref() == Some(ty)
                 || route.errors.iter().any(|err| err.name == ty)
         })
         .map(|route| format!("{} {}", route.method, route.path))
@@ -1568,6 +1669,7 @@ fn inferred_intent(action: &str, module: &str) -> String {
 
 fn type_to_string(ty: &Type) -> String {
     match ty {
+        Type::Option(inner) => format!("Option<{}>", type_to_string(inner)),
         Type::Result(ok, err) => format!("Result<{}, {}>", type_to_string(ok), type_to_string(err)),
         other => other.to_string(),
     }

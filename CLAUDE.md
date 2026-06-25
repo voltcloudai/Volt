@@ -3,6 +3,9 @@
 - Use `.ai/project.md`, `.ai/symbols.json`, `.ai/routes.json`, and `.ai/source-map.json` before reading broad source context.
 - Prefer native `route method "path"` declarations for HTTP endpoints.
 - Use `{id}` path params, not Express-style `:id` params.
+- Use `Option<T>` and `none` for absence; do not use `null` or `undefined`.
+- Use `if (value)` and `if (!value)` to narrow `Option<T>`.
+- Use `error` declarations for domain errors and typed route errors like `errors UserError { UserNotFound 404 }`.
 - Keep route bodies inside the supported Axum lowering subset unless you are extending the compiler.
 - Run `vlt ai index` after source structure changes.
 - Run `vlt build` after route changes.

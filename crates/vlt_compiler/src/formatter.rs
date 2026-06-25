@@ -10,6 +10,7 @@ pub fn format_program(program: &Program) -> String {
         match declaration {
             Decl::Function(function) => format_function(&mut out, function),
             Decl::Type(type_decl) => format_type_decl(&mut out, type_decl),
+            Decl::Error(error_decl) => format_error_decl(&mut out, error_decl),
             Decl::Route(route) => format_route(&mut out, route),
             Decl::Import(import) => format_import(&mut out, import),
         }
@@ -41,6 +42,23 @@ fn format_type_decl(out: &mut String, type_decl: &TypeDecl) {
         out.push_str(&format!("  {}: {}\n", field.name, format_type(&field.ty)));
     }
 
+    out.push_str("}\n");
+}
+
+fn format_error_decl(out: &mut String, error_decl: &ErrorDecl) {
+    if error_decl.exported {
+        out.push_str("export ");
+    }
+    out.push_str(&format!("error {} {{\n", error_decl.name));
+    for variant in &error_decl.variants {
+        let fields = variant
+            .fields
+            .iter()
+            .map(|field| format!("{}: {}", field.name, format_type(&field.ty)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("  {} {{ {} }}\n", variant.name, fields));
+    }
     out.push_str("}\n");
 }
 
@@ -95,7 +113,11 @@ fn format_route(out: &mut String, route: &RouteDecl) {
         format_type(&route.ok_type)
     ));
     if !route.errors.is_empty() {
-        out.push_str("  errors {\n");
+        if let Some(error_type) = &route.error_type {
+            out.push_str(&format!("  errors {} {{\n", format_type(error_type)));
+        } else {
+            out.push_str("  errors {\n");
+        }
         for error in &route.errors {
             out.push_str(&format!("    {} {}\n", error.name, error.status));
         }
@@ -193,6 +215,9 @@ fn format_expr(expr: &Expr) -> String {
             args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
         ),
         Expr::Try { expr, .. } => format!("try {}", format_expr(expr)),
+        Expr::Unary { op, expr, .. } => match op {
+            UnaryOp::Not => format!("!{}", format_expr(expr)),
+        },
         Expr::ObjectLiteral { fields, .. } => {
             let body = fields
                 .iter()
@@ -217,6 +242,19 @@ fn format_expr(expr: &Expr) -> String {
             );
             out.push_str(" }");
             out
+        }
+        Expr::ErrorVariantLiteral {
+            error,
+            variant,
+            fields,
+            ..
+        } => {
+            let body = fields
+                .iter()
+                .map(|field| format!("{}: {}", field.name, format_expr(&field.expr)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{error}.{variant}({{ {body} }})")
         }
         Expr::FieldAccess { object, field, .. } => format!("{}.{}", format_expr(object), field),
     }
@@ -249,6 +287,7 @@ fn format_op(op: BinaryOp) -> &'static str {
 
 fn format_type(ty: &Type) -> String {
     match ty {
+        Type::Option(inner) => format!("Option<{}>", format_type(inner)),
         Type::Result(ok, err) => format!("Result<{}, {}>", format_type(ok), format_type(err)),
         other => other.to_string(),
     }

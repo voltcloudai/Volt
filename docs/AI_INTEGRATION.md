@@ -34,7 +34,7 @@ route patch "/users/{id}"
   params { id: u64 }
   body UpdateUserInput
   ok 200 User
-  errors {
+  errors UserError {
     UserNotFound 404
     InvalidEmail 400
     EmailAlreadyExists 409

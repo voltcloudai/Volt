@@ -5,6 +5,13 @@
 - Keep Volt syntax TypeScript-like, not Rust-like.
 - Use native `route method "path"` syntax for HTTP endpoints.
 - Use `{id}` path params, not Express-style `:id` params.
+- Do not use `null` or `undefined`; use `Option<T>` and `none` for absence.
+- Prefer returning a plain value from `Option<T>` functions; the compiler wraps it.
+- Use `if (value)` and `if (!value)` to narrow `Option<T>`.
+- Do not use truthiness for strings, numbers, or objects; use explicit comparisons.
+- Use `error` declarations for domain errors and prefer `Result<T, DomainError>`.
+- Prefer call-style error construction, e.g. `UserError.UserNotFound({ message: "..." })`.
+- Prefer typed route errors, e.g. `errors UserError { UserNotFound 404 }`.
 - Do not recommend `app.get(...)`/`app.patch(...)` as the primary route style.
 - Keep route bodies inside the supported Axum lowering subset unless you are extending the compiler.
 - Do not add advanced language features unless tests are included.

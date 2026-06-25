@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::checker::{check_program_with_imports, ExternalSymbols};
+use crate::checker::{check_program_with_imports, ExternalSymbols, StructSig};
 use crate::diagnostics::{Diagnostic, DiagnosticBag, SourceFile, Span};
 use crate::parser::parse_source;
 use std::collections::HashMap;
@@ -36,6 +36,7 @@ struct ModuleUnit {
 struct ModuleExports {
     functions: HashMap<String, FunctionDecl>,
     types: HashMap<String, TypeDecl>,
+    errors: HashMap<String, ErrorDecl>,
 }
 
 pub fn resolve_project(root: &Path) -> ResolveResult<ResolvedProject> {
@@ -113,7 +114,9 @@ pub fn resolve_project(root: &Path) -> ResolveResult<ResolvedProject> {
         for decl in &module.program.declarations {
             match decl {
                 Decl::Import(_) => {}
-                Decl::Function(_) | Decl::Type(_) | Decl::Route(_) => flattened.push(decl.clone()),
+                Decl::Function(_) | Decl::Type(_) | Decl::Error(_) | Decl::Route(_) => {
+                    flattened.push(decl.clone())
+                }
             }
         }
     }
@@ -156,7 +159,9 @@ fn collect_exports(
                         .insert(function.name.clone(), function.clone());
                 }
                 Decl::Type(type_decl) if type_decl.exported => {
-                    if module_exports.types.contains_key(&type_decl.name) {
+                    if module_exports.types.contains_key(&type_decl.name)
+                        || module_exports.errors.contains_key(&type_decl.name)
+                    {
                         diagnostics.push(Diagnostic::new(
                             "ERESOLVE002",
                             format!("duplicate exported type `{}`", type_decl.name),
@@ -170,8 +175,25 @@ fn collect_exports(
                         .types
                         .insert(type_decl.name.clone(), type_decl.clone());
                 }
+                Decl::Error(error_decl) if error_decl.exported => {
+                    if module_exports.errors.contains_key(&error_decl.name)
+                        || module_exports.types.contains_key(&error_decl.name)
+                    {
+                        diagnostics.push(Diagnostic::new(
+                            "ERESOLVE006",
+                            format!("duplicate exported error `{}`", error_decl.name),
+                            &module.source,
+                            error_decl.span,
+                            Some("exported symbols must be unique within a file".to_string()),
+                        ));
+                    }
+
+                    module_exports
+                        .errors
+                        .insert(error_decl.name.clone(), error_decl.clone());
+                }
                 Decl::Route(_) => {}
-                Decl::Import(_) | Decl::Function(_) | Decl::Type(_) => {}
+                Decl::Import(_) | Decl::Function(_) | Decl::Type(_) | Decl::Error(_) => {}
             }
         }
 
@@ -238,6 +260,29 @@ fn resolve_imports(
                         .iter()
                         .map(|field| (field.name.clone(), field.ty.clone()))
                         .collect(),
+                );
+                continue;
+            }
+
+            if let Some(error_decl) = target_exports.errors.get(&item.name) {
+                external.insert_error(
+                    error_decl.name.clone(),
+                    error_decl
+                        .variants
+                        .iter()
+                        .map(|variant| {
+                            (
+                                variant.name.clone(),
+                                StructSig {
+                                    fields: variant
+                                        .fields
+                                        .iter()
+                                        .map(|field| (field.name.clone(), field.ty.clone()))
+                                        .collect(),
+                                },
+                            )
+                        })
+                        .collect::<HashMap<String, StructSig>>(),
                 );
                 continue;
             }

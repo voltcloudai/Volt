@@ -75,6 +75,9 @@ fn ai_index_generates_symbols_json() {
     assert!(symbols.contains("\"language\": \"Volt\""));
     assert!(symbols.contains("\"name\": \"User\""));
     assert!(symbols.contains("\"name\": \"createUser\""));
+    assert!(symbols.contains("\"name\": \"UserError\""));
+    assert!(symbols.contains("\"name\": \"UserNotFound\""));
+    assert!(symbols.contains("\"fields\""));
     assert!(symbols.contains("\"module\": \"users\""));
 }
 
@@ -274,6 +277,8 @@ fn plan_update_user_endpoint_uses_patch_and_users_files() {
     assert!(stdout.contains("Inferred intent:\nUpdate an existing user."));
     assert!(stdout.contains("src/users/users.routes.vlt"));
     assert!(stdout.contains("src/users/users.service.vlt"));
+    assert!(stdout.contains("errors UserError {"));
+    assert!(stdout.contains("EmailAlreadyExists 409"));
     assert!(stdout.contains("Existing users module found."));
 }
 
@@ -333,7 +338,7 @@ fn native_route_index_includes_structured_metadata() {
   params { id: u64 }
   body UpdateUserInput
   ok 200 User
-  errors {
+  errors UserError {
     UserNotFound 404
     InvalidEmail 400
     EmailAlreadyExists 409
@@ -362,6 +367,7 @@ fn native_route_index_includes_structured_metadata() {
     assert!(routes.contains("\"success\""));
     assert!(routes.contains("\"status\": 200"));
     assert!(routes.contains("\"type\": \"User\""));
+    assert!(routes.contains("\"errorType\": \"UserError\""));
     assert!(routes.contains("\"name\": \"InvalidEmail\""));
     assert!(routes.contains("\"status\": 400"));
     assert!(routes.contains("\"effects\""));
@@ -457,6 +463,9 @@ fn ai_prompt_generates_useful_generic_prompt() {
     assert!(stdout.contains("vlt ai index"));
     assert!(stdout.contains("vlt build"));
     assert!(stdout.contains("Use Result<T, E> for fallible operations."));
+    assert!(stdout.contains("Use Option<T> for absence"));
+    assert!(stdout.contains("errors UserError {"));
+    assert!(stdout.contains("EmailAlreadyExists 409"));
     assert!(stdout.contains("Prefer native routes over `app.get(...)` or `app.patch(...)` calls."));
     assert!(stdout.contains("Do not call external AI APIs."));
 }

@@ -3,7 +3,10 @@ use tempfile::tempdir;
 use vlt_compiler::ast::{Decl, Expr, HttpMethod, Stmt};
 use vlt_compiler::project::run_file;
 use vlt_compiler::types::Type;
-use vlt_compiler::{check_program, generate_rust, parse_source, DiagnosticBag, SourceFile};
+use vlt_compiler::{
+    check_program, check_program_with_imports, generate_rust, parse_source, DiagnosticBag,
+    ExternalSymbols, SourceFile,
+};
 
 fn source(text: &str) -> SourceFile {
     SourceFile::new("test.vlt", text)
@@ -12,6 +15,13 @@ fn source(text: &str) -> SourceFile {
 fn parse(text: &str) -> vlt_compiler::ast::Program {
     let source = source(text);
     parse_source(&source).expect("source should parse")
+}
+
+fn check_without_entrypoint(
+    program: &vlt_compiler::ast::Program,
+    source: &SourceFile,
+) -> Result<(), DiagnosticBag> {
+    check_program_with_imports(program, source, ExternalSymbols::default(), false)
 }
 
 #[test]
@@ -73,7 +83,7 @@ function main(): void {
 "#,
     );
     let program = parse_source(&source).unwrap();
-    check_program(&program, &source).expect("program should check");
+    check_without_entrypoint(&program, &source).expect("program should check");
 }
 
 #[test]
@@ -141,7 +151,7 @@ function main(): void {
 "#,
     );
     let program = parse_source(&source).unwrap();
-    check_program(&program, &source).expect("program should check");
+    check_without_entrypoint(&program, &source).expect("program should check");
 
     let Decl::Function(main_fn) = &program.declarations[1] else {
         panic!("expected function");
@@ -429,4 +439,412 @@ route get "/users/{id}"
     assert!(rust.contains("// Native Volt route scaffold."));
     assert!(rust.contains("route GET \"/users/{id}\" -> 200 User"));
     assert!(rust.contains("Router::new().route(\"/users/{id}\""));
+}
+
+#[test]
+fn parses_option_type() {
+    let program = parse(
+        r#"
+type User = { id: u64 }
+
+function maybeUser(): Option<User> {
+  return none
+}
+"#,
+    );
+
+    let Decl::Function(function) = &program.declarations[1] else {
+        panic!("expected function");
+    };
+    assert_eq!(
+        function.return_type,
+        Type::Option(Box::new(Type::Struct("User".to_string())))
+    );
+}
+
+#[test]
+fn option_return_none_and_plain_value_check() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+
+function missing(): Option<User> {
+  return none
+}
+
+function existing(): Option<User> {
+  return User({ id: 1 })
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+}
+
+#[test]
+fn none_from_non_option_fails() {
+    let source = source(
+        r#"
+function main(): string {
+  return none
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_without_entrypoint(&program, &source).expect_err("program should fail");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "E123"));
+}
+
+#[test]
+fn wrong_option_inner_type_fails() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+
+function maybeUser(): Option<User> {
+  return "wrong"
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_without_entrypoint(&program, &source).expect_err("program should fail");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "E123"));
+}
+
+#[test]
+fn result_option_ok_wraps_plain_value() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+error UserError {
+  UserNotFound { message: string }
+}
+
+function findUser(): Result<Option<User>, UserError> {
+  return ok(User({ id: 1 }))
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+    let rust = generate_rust(&program);
+    assert!(rust.contains("return Ok(Some(User { id: 1 }));"));
+}
+
+#[test]
+fn option_codegen_emits_some_and_none() {
+    let program = parse(
+        r#"
+function maybeName(): Option<string> {
+  return "Carlos"
+}
+
+function noName(): Option<string> {
+  return none
+}
+"#,
+    );
+    let rust = generate_rust(&program);
+    assert!(rust.contains("fn maybeName() -> Option<String>"));
+    assert!(rust.contains("return Some(\"Carlos\".to_string());"));
+    assert!(rust.contains("return None;"));
+}
+
+#[test]
+fn parses_error_declaration() {
+    let program = parse(
+        r#"
+export error UserError {
+  UserNotFound { message: string }
+}
+"#,
+    );
+
+    let Decl::Error(error_decl) = &program.declarations[0] else {
+        panic!("expected error declaration");
+    };
+    assert!(error_decl.exported);
+    assert_eq!(error_decl.name, "UserError");
+    assert_eq!(error_decl.variants[0].name, "UserNotFound");
+}
+
+#[test]
+fn error_variant_construction_checks_and_generates() {
+    let source = source(
+        r#"
+error UserError {
+  UserNotFound { message: string }
+}
+
+function fail(): Result<string, UserError> {
+  return err(UserError.UserNotFound({ message: "User not found" }))
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+    let rust = generate_rust(&program);
+    assert!(rust.contains("enum UserError"));
+    assert!(rust.contains("UserError::UserNotFound { message: \"User not found\".to_string() }"));
+}
+
+#[test]
+fn error_variant_validation_fails() {
+    for text in [
+        r#"
+error UserError { UserNotFound { message: string } }
+function fail(): Result<string, UserError> {
+  return err(UserError.Unknown({ message: "x" }))
+}
+"#,
+        r#"
+error UserError { UserNotFound { message: string } }
+function fail(): Result<string, UserError> {
+  return err(UserError.UserNotFound({}))
+}
+"#,
+        r#"
+error UserError { UserNotFound { message: string } }
+function fail(): Result<string, UserError> {
+  return err(UserError.UserNotFound({ message: 123 }))
+}
+"#,
+        r#"
+error UserError { UserNotFound { message: string } }
+function fail(): Result<string, UserError> {
+  return err(UserError.UserNotFound({ message: "x", extra: "wrong" }))
+}
+"#,
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        check_without_entrypoint(&program, &source).expect_err("program should fail");
+    }
+}
+
+#[test]
+fn option_if_narrowing_checks() {
+    let source = source(
+        r#"
+type User = { email: string }
+
+function maybeUser(): Option<User> {
+  return User({ email: "demo@test.com" })
+}
+
+function main(): void {
+  const user = maybeUser()
+  if (user) {
+    print(user.email)
+  }
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+}
+
+#[test]
+fn option_field_access_outside_narrowing_fails() {
+    let source = source(
+        r#"
+type User = { email: string }
+
+function maybeUser(): Option<User> {
+  return none
+}
+
+function main(): void {
+  const user = maybeUser()
+  if (user) {
+    print(user.email)
+  }
+  print(user.email)
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_without_entrypoint(&program, &source).expect_err("program should fail");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "E109"));
+}
+
+#[test]
+fn if_rejects_string_and_number_conditions() {
+    for text in [
+        r#"function main(): void { if ("hello") { print("x") } }"#,
+        r#"function main(): void { if (123) { print("x") } }"#,
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(diagnostics
+            .all()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "E125"));
+    }
+}
+
+#[test]
+fn negative_option_guard_narrows_after_return() {
+    let source = source(
+        r#"
+type User = { email: string }
+error UserError {
+  UserNotFound { message: string }
+}
+
+function maybeUser(): Result<Option<User>, UserError> {
+  return ok(none)
+}
+
+function getUser(): Result<User, UserError> {
+  const user = try maybeUser()
+  if (!user) {
+    return err(UserError.UserNotFound({ message: "User not found" }))
+  }
+  return ok(user)
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+    let rust = generate_rust(&program);
+    assert!(rust.contains("let user = if let Some(user) = user"));
+}
+
+#[test]
+fn positive_option_narrowing_codegen_uses_if_let() {
+    let program = parse(
+        r#"
+type User = { email: string }
+
+function maybeUser(): Option<User> {
+  return User({ email: "demo@test.com" })
+}
+
+function main(): void {
+  const user = maybeUser()
+  if (user) {
+    print(user.email)
+  }
+}
+"#,
+    );
+    let rust = generate_rust(&program);
+    assert!(rust.contains("if let Some(user) = user"));
+}
+
+#[test]
+fn parses_typed_route_errors() {
+    let program = parse(
+        r#"
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  errors UserError {
+    UserNotFound 404
+  }
+{
+  return ok(user)
+}
+"#,
+    );
+
+    let Decl::Route(route) = &program.declarations[0] else {
+        panic!("expected route");
+    };
+    assert_eq!(
+        route.error_type,
+        Some(Type::Struct("UserError".to_string()))
+    );
+    assert_eq!(route.errors[0].name, "UserNotFound");
+}
+
+#[test]
+fn typed_route_error_validation() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+error UserError {
+  UserNotFound { message: string }
+}
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  errors UserError {
+    Unknown 404
+  }
+{
+  return ok(User({ id: params.id }))
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_program(&program, &source).expect_err("program should fail");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP009"));
+}
+
+#[test]
+fn typed_route_unknown_error_type_fails() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  errors MissingError {
+    UserNotFound 404
+  }
+{
+  return ok(User({ id: params.id }))
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_program(&program, &source).expect_err("program should fail");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP008"));
+}
+
+#[test]
+fn typed_route_non_error_type_fails() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+type UserError = { message: string }
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  errors UserError {
+    UserNotFound 404
+  }
+{
+  return ok(User({ id: params.id }))
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_program(&program, &source).expect_err("program should fail");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP007"));
 }

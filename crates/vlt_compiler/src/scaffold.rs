@@ -107,6 +107,8 @@ const AGENTS: &str = r#"# Agent Instructions
 - Keep syntax TypeScript-like.
 - Do not use null, undefined, exceptions, classes, or inheritance.
 - Use Result<T, E> for fallible operations.
+- Use Option<T> for absence; prefer `return none`.
+- Use domain `error` declarations for typed errors.
 - Keep route input/output types explicit.
 - Prefer native `route method "path"` declarations over `app.get(...)`.
 - Keep route bodies inside the supported Axum lowering subset until the compiler grows.
@@ -150,12 +152,12 @@ const HEALTH_TYPES: &str = r#"export type HealthResponse = {
 "#;
 
 const USERS_ROUTES: &str = r#"import { User, CreateUserInput } from "./users.types"
-import { UserNotFound, DatabaseError, InvalidEmail } from "./users.errors"
+import { UserError } from "./users.errors"
 
 route get "/users/{id}"
   params { id: u64 }
   ok 200 User
-  errors {
+  errors UserError {
     UserNotFound 404
     DatabaseError 500
   }
@@ -170,7 +172,7 @@ route get "/users/{id}"
 route post "/users"
   body CreateUserInput
   ok 201 User
-  errors {
+  errors UserError {
     InvalidEmail 400
     DatabaseError 500
   }
@@ -235,21 +237,11 @@ export type CreateUserInput = {
 }
 "#;
 
-const USERS_ERRORS: &str = r#"export type UserError = {
-  code: string
-  message: string
-}
-
-export type UserNotFound = {
-  message: string
-}
-
-export type InvalidEmail = {
-  message: string
-}
-
-export type DatabaseError = {
-  message: string
+const USERS_ERRORS: &str = r#"export error UserError {
+  UserNotFound { message: string }
+  InvalidEmail { message: string }
+  EmailAlreadyExists { email: string }
+  DatabaseError { message: string }
 }
 "#;
 const USERS_TEST: &str = r#"function testCreateUser(): void {
@@ -285,7 +277,13 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 - Do not use undefined.
 - Do not use exceptions.
 - Use Result<T, E> for fallible operations.
-- Use Option<T> for optional values.
+- Use Option<T> for absence.
+- Prefer `return none` for absent Option<T> values.
+- Prefer returning the plain value from Option<T> functions; the compiler wraps it.
+- Use `if (value)` and `if (!value)` to narrow Option<T>.
+- Do not use truthiness for strings, numbers, or objects; use explicit comparisons.
+- Use domain `error` declarations for typed errors.
+- Prefer typed route errors with `errors DomainError { Variant 404 }`.
 - Use request ctx.arena for request-scoped allocations.
 - Keep route input/output types explicit.
 - Use native `route method "path"` declarations for HTTP endpoints.
@@ -325,7 +323,7 @@ pub const EXAMPLES: &str = r#"# Examples
 
 ```ts
 function createUser(input: CreateUserInput): Result<User, CreateUserError> {
-  return err("not implemented")
+  return err(CreateUserError.DatabaseError({ message: "not implemented" }))
 }
 ```
 
@@ -333,6 +331,10 @@ function createUser(input: CreateUserInput): Result<User, CreateUserError> {
 route get "/users/{id}"
   params { id: u64 }
   ok 200 User
+  errors UserError {
+    UserNotFound 404
+    DatabaseError 500
+  }
 {
   const user = try getUser(params.id, ctx)
   return ok(user)

@@ -56,7 +56,7 @@ Routes are top-level declarations. They are first-class language constructs so V
 route get "/users/{id}"
   params { id: u64 }
   ok 200 User
-  errors {
+  errors UserError {
     UserNotFound 404
     DatabaseError 500
   }
@@ -74,7 +74,7 @@ route patch "/users/{id}"
   query { verbose: bool }
   body UpdateUserInput
   ok 200 User
-  errors {
+  errors UserError {
     UserNotFound 404
     InvalidEmail 400
     EmailAlreadyExists 409
@@ -95,7 +95,7 @@ Rules:
 
 - Methods are lowercase: `get`, `post`, `put`, `patch`, `delete`.
 - Paths are string literals and path params use `{id}` syntax.
-- `params { ... }`, `query { ... }`, `body Type`, `errors { ... }`, and `effects [...]` are optional.
+- `params { ... }`, `query { ... }`, `body Type`, `errors ErrorType { ... }`, legacy `errors { ... }`, and `effects [...]` are optional.
 - `ok <status> <Type>` is required.
 - Route bodies can refer to implicit `params`, `query`, `body`, and `ctx`.
 - GET routes may omit a body and currently produce a diagnostic if they declare one.
@@ -127,10 +127,12 @@ Unsupported route body syntax produces `EHTTPLOWER001`.
 - `bool`
 - `string`
 - `void`
+- `Option<T>`
 - `Result<T, E>`
 - User-declared object types with `type Name = { field: Type }`
+- Domain error declarations with `error Name { Variant { field: Type } }`
 
-`string` maps to Rust `String`. `Result<T, E>` maps to Rust `Result<T, E>`.
+`string` maps to Rust `String`. `Option<T>` maps to Rust `Option<T>`. `Result<T, E>` maps to Rust `Result<T, E>`.
 
 ## Expressions
 
@@ -143,14 +145,36 @@ Supported expressions:
 - Variable references
 - Binary expressions with `+`, `-`, `*`, `/`, `===`, `!==`, `<`, `>`, `<=`, `>=`
 - Function calls
+- Call-style struct construction with `User({ id: 1 })`
+- Call-style error construction with `UserError.UserNotFound({ message: "..." })`
 - `try` on `Result<T, E>` values in route-oriented code
+- `none` in `Option<T>` contexts
 - Object literals
 - Anonymous object literals and spread fields for compact route inputs
 - Field access
 
 ## Error Model
 
-Volt v0.1 has no exceptions. Fallible operations should use `Result<T, E>`.
+Volt v0.1 has no exceptions, `null`, or `undefined`. Absence should use `Option<T>`. Fallible operations should use `Result<T, E>` and domain `error` declarations.
+
+```ts
+export error UserError {
+  UserNotFound { message: string }
+  InvalidEmail { message: string }
+}
+
+function maybeUser(id: u64): Option<User> {
+  if (id === 1) {
+    return User({ id: 1, email: "demo@test.com" })
+  }
+
+  return none
+}
+```
+
+Returning a plain `T` from an `Option<T>` function is accepted and lowered to `Some(T)`. `return none` lowers to `None`.
+
+`if (value)` and `if (!value)` narrow `Option<T>` values. Volt does not implement JavaScript truthiness: strings, numbers, and object types are rejected as conditions unless compared explicitly.
 
 Builtins:
 
@@ -159,6 +183,8 @@ ok(value): Result<T, E>
 err(value): Result<T, E>
 print(value): void
 ```
+
+`switch` is reserved for normal TypeScript-like value control flow. Option handling is done with `if (value)` and `if (!value)` narrowing, not public `match` or `switch (option.kind)` patterns.
 
 ## Memory Model
 

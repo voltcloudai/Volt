@@ -33,6 +33,7 @@ impl Parser<'_> {
                     declarations.push(Decl::Function(self.parse_function(false)))
                 }
                 TokenKind::Type => declarations.push(Decl::Type(self.parse_type_decl(false))),
+                TokenKind::Error => declarations.push(Decl::Error(self.parse_error_decl(false))),
                 TokenKind::Route => declarations.push(Decl::Route(self.parse_route_decl(false))),
                 _ => {
                     let token = self.peek().clone();
@@ -40,7 +41,7 @@ impl Parser<'_> {
                         "E010",
                         "expected top-level declaration",
                         token.span,
-                        "start with `import`, `export`, `function`, `type`, or `route`",
+                        "start with `import`, `export`, `function`, `type`, `error`, or `route`",
                     );
                     self.advance();
                 }
@@ -60,6 +61,7 @@ impl Parser<'_> {
         match self.peek_kind() {
             TokenKind::Function => Decl::Function(self.parse_function(true)),
             TokenKind::Type => Decl::Type(self.parse_type_decl(true)),
+            TokenKind::Error => Decl::Error(self.parse_error_decl(true)),
             TokenKind::Route => Decl::Route(self.parse_route_decl(true)),
             _ => {
                 let token = self.peek().clone();
@@ -67,7 +69,7 @@ impl Parser<'_> {
                     "EEXPORT001",
                     "expected declaration after `export`",
                     token.span,
-                    "export a `function`, `type`, or `route`",
+                    "export a `function`, `type`, `error`, or `route`",
                 );
                 self.advance();
 
@@ -142,6 +144,7 @@ impl Parser<'_> {
         let mut body_type = None;
         let mut ok_status = None;
         let mut ok_type = None;
+        let mut error_type = None;
         let mut errors = Vec::new();
         let mut effects = Vec::new();
 
@@ -157,7 +160,12 @@ impl Parser<'_> {
                 ok_status = Some(status);
                 ok_type = Some(self.parse_type());
             } else if self.eat_keyword("errors") {
-                errors = self.parse_route_errors();
+                if self.at(TokenKindName::LBrace) {
+                    errors = self.parse_route_errors();
+                } else {
+                    error_type = Some(self.parse_type());
+                    errors = self.parse_route_errors();
+                }
             } else if self.eat_keyword("effects") {
                 effects = self.parse_effects();
             } else {
@@ -198,6 +206,7 @@ impl Parser<'_> {
             body_type,
             ok_status: ok_status.unwrap_or(200),
             ok_type: ok_type.unwrap_or(Type::Unknown),
+            error_type,
             errors,
             effects,
             statements,
@@ -379,6 +388,56 @@ impl Parser<'_> {
         }
     }
 
+    fn parse_error_decl(&mut self, exported: bool) -> ErrorDecl {
+        let start = self.expect(TokenKindName::Error, "expected `error`").start;
+        let (name, _) = self.expect_ident("expected error name");
+        self.expect(TokenKindName::LBrace, "expected `{` to start error body");
+
+        let mut variants = Vec::new();
+        while !self.at(TokenKindName::RBrace) && !self.at(TokenKindName::Eof) {
+            let (variant_name, variant_span) = self.expect_ident("expected error variant name");
+            self.expect(
+                TokenKindName::LBrace,
+                "expected `{` after error variant name",
+            );
+            let mut fields = Vec::new();
+            while !self.at(TokenKindName::RBrace) && !self.at(TokenKindName::Eof) {
+                let (field_name, span) = self.expect_ident("expected error field name");
+                self.expect(TokenKindName::Colon, "expected `:` after error field name");
+                let ty = self.parse_type();
+                fields.push(FieldDecl {
+                    name: field_name,
+                    ty,
+                    span,
+                });
+                self.eat(TokenKindName::Comma);
+            }
+            let end = self
+                .expect(
+                    TokenKindName::RBrace,
+                    "expected `}` after error variant fields",
+                )
+                .end;
+            variants.push(ErrorVariant {
+                name: variant_name,
+                fields,
+                span: Span::new(variant_span.start, end),
+            });
+            self.eat(TokenKindName::Comma);
+        }
+
+        let end = self
+            .expect(TokenKindName::RBrace, "expected `}` after error body")
+            .end;
+
+        ErrorDecl {
+            exported,
+            name,
+            variants,
+            span: Span::new(start, end),
+        }
+    }
+
     fn parse_block(&mut self) -> Vec<Stmt> {
         self.expect(TokenKindName::LBrace, "expected `{` to start block");
         let mut body = Vec::new();
@@ -543,7 +602,7 @@ impl Parser<'_> {
     }
 
     fn parse_factor(&mut self) -> Expr {
-        let mut expr = self.parse_postfix();
+        let mut expr = self.parse_unary();
         loop {
             let op = if self.eat(TokenKindName::Star) {
                 Some(BinaryOp::Mul)
@@ -553,7 +612,7 @@ impl Parser<'_> {
                 None
             };
             let Some(op) = op else { break };
-            let right = self.parse_postfix();
+            let right = self.parse_unary();
             let span = expr.span().merge(right.span());
             expr = Expr::Binary {
                 left: Box::new(expr),
@@ -563,6 +622,21 @@ impl Parser<'_> {
             };
         }
         expr
+    }
+
+    fn parse_unary(&mut self) -> Expr {
+        if self.eat(TokenKindName::Bang) {
+            let op_span = self.previous_span();
+            let expr = self.parse_unary();
+            let span = op_span.merge(expr.span());
+            Expr::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(expr),
+                span,
+            }
+        } else {
+            self.parse_postfix()
+        }
     }
 
     fn parse_postfix(&mut self) -> Expr {
@@ -576,6 +650,8 @@ impl Parser<'_> {
                     field,
                     span,
                 };
+            } else if self.at(TokenKindName::LParen) {
+                expr = self.parse_postfix_call(expr);
             } else {
                 break;
             }
@@ -606,9 +682,6 @@ impl Parser<'_> {
                 value: false,
                 span: token.span,
             },
-            TokenKind::Ident(name) if self.at(TokenKindName::LParen) => {
-                self.parse_call(name, token.span)
-            }
             TokenKind::Ident(name) if self.at(TokenKindName::LBrace) => {
                 self.parse_struct_literal(name, token.span)
             }
@@ -675,7 +748,8 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_call(&mut self, callee: String, start_span: Span) -> Expr {
+    fn parse_postfix_call(&mut self, callee: Expr) -> Expr {
+        let start = callee.span().start;
         self.expect(TokenKindName::LParen, "expected `(` in call");
         let mut args = Vec::new();
         while !self.at(TokenKindName::RParen) && !self.at(TokenKindName::Eof) {
@@ -687,10 +761,45 @@ impl Parser<'_> {
         let end = self
             .expect(TokenKindName::RParen, "expected `)` after call arguments")
             .end;
-        Expr::Call {
-            callee,
-            args,
-            span: Span::new(start_span.start, end),
+        let span = Span::new(start, end);
+
+        match callee {
+            Expr::Var { name, .. } => Expr::Call {
+                callee: name,
+                args,
+                span,
+            },
+            Expr::FieldAccess { object, field, .. } => {
+                if let Expr::Var { name: error, .. } = *object {
+                    if args.len() == 1 {
+                        if let Some(fields) = object_literal_fields(&args[0]) {
+                            return Expr::ErrorVariantLiteral {
+                                error,
+                                variant: field,
+                                fields,
+                                span,
+                            };
+                        }
+                    }
+                }
+
+                self.error(
+                    "E015",
+                    "unsupported callee expression",
+                    span,
+                    "call functions as `name(...)` or construct errors as `Error.Variant({ ... })`",
+                );
+                Expr::Int { value: 0, span }
+            }
+            _ => {
+                self.error(
+                    "E015",
+                    "unsupported callee expression",
+                    span,
+                    "call functions as `name(...)`",
+                );
+                Expr::Int { value: 0, span }
+            }
         }
     }
 
@@ -730,6 +839,12 @@ impl Parser<'_> {
             "bool" => Type::Bool,
             "string" => Type::String,
             "void" => Type::Void,
+            "Option" => {
+                self.expect(TokenKindName::Lt, "expected `<` after `Option`");
+                let inner = self.parse_type();
+                self.expect(TokenKindName::Gt, "expected `>` after `Option<T>`");
+                Type::Option(Box::new(inner))
+            }
             "Result" => {
                 self.expect(TokenKindName::Lt, "expected `<` after `Result`");
                 let ok = self.parse_type();
@@ -843,6 +958,25 @@ fn stmt_span(stmt: &Stmt) -> Span {
     }
 }
 
+fn object_literal_fields(expr: &Expr) -> Option<Vec<FieldValue>> {
+    let Expr::ObjectLiteral { fields, .. } = expr else {
+        return None;
+    };
+
+    let mut values = Vec::new();
+    for field in fields {
+        match field {
+            ObjectField::Named { name, expr, span } => values.push(FieldValue {
+                name: name.clone(),
+                expr: expr.clone(),
+                span: *span,
+            }),
+            ObjectField::Spread { .. } => return None,
+        }
+    }
+    Some(values)
+}
+
 #[derive(Debug, Clone, Copy)]
 enum TokenKindName {
     Import,
@@ -850,6 +984,7 @@ enum TokenKindName {
     From,
     Function,
     Type,
+    Error,
     Const,
     Let,
     Return,
@@ -867,6 +1002,7 @@ enum TokenKindName {
     Slash,
     EqEqEq,
     BangEqEq,
+    Bang,
     Lt,
     Gt,
     LtEq,
@@ -889,6 +1025,7 @@ impl TokenKindName {
                 | (TokenKindName::Import, TokenKind::Import)
                 | (TokenKindName::From, TokenKind::From)
                 | (TokenKindName::Type, TokenKind::Type)
+                | (TokenKindName::Error, TokenKind::Error)
                 | (TokenKindName::Const, TokenKind::Const)
                 | (TokenKindName::Let, TokenKind::Let)
                 | (TokenKindName::Return, TokenKind::Return)
@@ -906,6 +1043,7 @@ impl TokenKindName {
                 | (TokenKindName::Slash, TokenKind::Slash)
                 | (TokenKindName::EqEqEq, TokenKind::EqEqEq)
                 | (TokenKindName::BangEqEq, TokenKind::BangEqEq)
+                | (TokenKindName::Bang, TokenKind::Bang)
                 | (TokenKindName::Lt, TokenKind::Lt)
                 | (TokenKindName::Gt, TokenKind::Gt)
                 | (TokenKindName::LtEq, TokenKind::LtEq)

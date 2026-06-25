@@ -18,6 +18,12 @@ pub struct StructSig {
 pub struct ExternalSymbols {
     pub functions: HashMap<String, FunctionSig>,
     pub structs: HashMap<String, StructSig>,
+    pub errors: HashMap<String, ErrorSig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ErrorSig {
+    pub variants: HashMap<String, StructSig>,
 }
 
 impl ExternalSymbols {
@@ -38,6 +44,10 @@ impl ExternalSymbols {
 
     pub fn insert_struct(&mut self, name: impl Into<String>, fields: HashMap<String, Type>) {
         self.structs.insert(name.into(), StructSig { fields });
+    }
+
+    pub fn insert_error(&mut self, name: impl Into<String>, variants: HashMap<String, StructSig>) {
+        self.errors.insert(name.into(), ErrorSig { variants });
     }
 }
 
@@ -60,6 +70,7 @@ struct Checker<'a> {
     diagnostics: DiagnosticBag,
     functions: HashMap<String, FunctionSig>,
     structs: HashMap<String, StructSig>,
+    errors: HashMap<String, ErrorSig>,
     route_scope: bool,
     require_entrypoint: bool,
 }
@@ -77,6 +88,7 @@ impl<'a> Checker<'a> {
             diagnostics: DiagnosticBag::new(),
             functions: external.functions,
             structs: external.structs,
+            errors: external.errors,
             route_scope: false,
             require_entrypoint,
         }
@@ -90,6 +102,7 @@ impl<'a> Checker<'a> {
                 Decl::Import(_) => {}
                 Decl::Function(function) => self.check_function(function),
                 Decl::Type(type_decl) => self.check_type_decl(type_decl),
+                Decl::Error(error_decl) => self.check_error_decl(error_decl),
                 Decl::Route(route) => self.check_route(route),
             }
         }
@@ -161,6 +174,39 @@ impl<'a> Checker<'a> {
                         },
                     );
                 }
+                Decl::Error(error_decl) => {
+                    if self.errors.contains_key(&error_decl.name)
+                        || self.structs.contains_key(&error_decl.name)
+                    {
+                        self.error(
+                            "EERROR001",
+                            format!("duplicate error `{}`", error_decl.name),
+                            error_decl.span,
+                            "error names must be unique",
+                        );
+                    }
+                    self.errors.insert(
+                        error_decl.name.clone(),
+                        ErrorSig {
+                            variants: error_decl
+                                .variants
+                                .iter()
+                                .map(|variant| {
+                                    (
+                                        variant.name.clone(),
+                                        StructSig {
+                                            fields: variant
+                                                .fields
+                                                .iter()
+                                                .map(|field| (field.name.clone(), field.ty.clone()))
+                                                .collect(),
+                                        },
+                                    )
+                                })
+                                .collect(),
+                        },
+                    );
+                }
                 Decl::Route(_) => {}
             }
         }
@@ -180,6 +226,7 @@ impl<'a> Checker<'a> {
             self.check_type_exists(body_type, route.span);
         }
         self.check_type_exists(&route.ok_type, route.span);
+        self.check_route_error_mappings(route);
 
         let params_type = format!("__route_params_{}", route.span.start);
         let query_type = format!("__route_query_{}", route.span.start);
@@ -212,7 +259,8 @@ impl<'a> Checker<'a> {
             env.insert("body".to_string(), body_type.clone());
         }
 
-        let return_type = Type::Result(Box::new(route.ok_type.clone()), Box::new(Type::Unknown));
+        let err_type = route.error_type.clone().unwrap_or(Type::Unknown);
+        let return_type = Type::Result(Box::new(route.ok_type.clone()), Box::new(err_type));
         let previous_route_scope = self.route_scope;
         self.route_scope = true;
         for stmt in &route.statements {
@@ -252,6 +300,52 @@ impl<'a> Checker<'a> {
                 route.span,
                 "move inputs into `params` or `query` for GET routes",
             );
+        }
+    }
+
+    fn check_route_error_mappings(&mut self, route: &RouteDecl) {
+        let Some(error_type) = &route.error_type else {
+            return;
+        };
+
+        let Type::Struct(error_name) = error_type else {
+            self.error(
+                "EHTTP006",
+                format!("route error type must be an error declaration, found `{error_type}`"),
+                route.span,
+                "use `errors DomainError { ... }` with an error declaration",
+            );
+            return;
+        };
+
+        let Some(error_sig) = self.errors.get(error_name).cloned() else {
+            if self.structs.contains_key(error_name) {
+                self.error(
+                    "EHTTP007",
+                    format!("`{error_name}` is not an error declaration"),
+                    route.span,
+                    "declare it with `error`, not `type`",
+                );
+            } else {
+                self.error(
+                    "EHTTP008",
+                    format!("unknown route error type `{error_name}`"),
+                    route.span,
+                    "import or declare the error type before using it in route errors",
+                );
+            }
+            return;
+        };
+
+        for mapping in &route.errors {
+            if !error_sig.variants.contains_key(&mapping.name) {
+                self.error(
+                    "EHTTP009",
+                    format!("error `{error_name}` has no variant `{}`", mapping.name),
+                    mapping.span,
+                    "map a declared error variant",
+                );
+            }
         }
     }
 
@@ -298,6 +392,33 @@ impl<'a> Checker<'a> {
                 );
             }
             self.check_type_exists(&field.ty, field.span);
+        }
+    }
+
+    fn check_error_decl(&mut self, error_decl: &ErrorDecl) {
+        let mut seen = HashSet::new();
+        for variant in &error_decl.variants {
+            if !seen.insert(variant.name.clone()) {
+                self.error(
+                    "EERROR002",
+                    format!("duplicate error variant `{}`", variant.name),
+                    variant.span,
+                    "variant names must be unique within an error declaration",
+                );
+            }
+
+            let mut seen_fields = HashSet::new();
+            for field in &variant.fields {
+                if !seen_fields.insert(field.name.clone()) {
+                    self.error(
+                        "EERROR003",
+                        format!("duplicate field `{}`", field.name),
+                        field.span,
+                        "field names must be unique within an error variant",
+                    );
+                }
+                self.check_type_exists(&field.ty, field.span);
+            }
         }
     }
 
@@ -360,10 +481,12 @@ impl<'a> Checker<'a> {
                 else_body,
                 ..
             } => {
-                let actual = self.check_expr(condition, env, Some(&Type::Bool));
-                self.expect_type(&Type::Bool, &actual, condition.span());
+                let condition_info = self.check_condition(condition, env);
 
                 let mut then_env = env.clone();
+                if let Some((name, narrowed)) = &condition_info.positive_narrow {
+                    then_env.insert(name.clone(), narrowed.clone());
+                }
                 for stmt in then_body {
                     self.check_stmt(stmt, return_type, &mut then_env);
                 }
@@ -371,9 +494,83 @@ impl<'a> Checker<'a> {
                 for stmt in else_body {
                     self.check_stmt(stmt, return_type, &mut else_env);
                 }
+
+                if else_body.is_empty() && always_returns(then_body) {
+                    if let Some((name, narrowed)) = condition_info.negative_guard_narrow {
+                        env.insert(name, narrowed);
+                    }
+                }
             }
             Stmt::Expr { expr, .. } => {
                 self.check_expr(expr, env, None);
+            }
+        }
+    }
+
+    fn check_condition(&mut self, condition: &Expr, env: &HashMap<String, Type>) -> ConditionInfo {
+        match condition {
+            Expr::Unary {
+                op: UnaryOp::Not,
+                expr,
+                ..
+            } => {
+                let inner_ty = self.check_expr(expr, env, None);
+                match inner_ty {
+                    Type::Bool => ConditionInfo::default(),
+                    Type::Option(inner) => {
+                        let mut info = ConditionInfo::default();
+                        if let Expr::Var { name, .. } = expr.as_ref() {
+                            info.negative_guard_narrow = Some((name.clone(), *inner));
+                        }
+                        info
+                    }
+                    Type::Unknown => ConditionInfo::default(),
+                    other => {
+                        self.error(
+                            "E126",
+                            format!("`!` requires bool or Option<T>, found `{other}`"),
+                            condition.span(),
+                            "use `!` only with booleans or Option values",
+                        );
+                        ConditionInfo::default()
+                    }
+                }
+            }
+            Expr::Var { name, .. } => {
+                let actual = self.check_expr(condition, env, None);
+                match actual {
+                    Type::Bool => ConditionInfo::default(),
+                    Type::Option(inner) => ConditionInfo {
+                        positive_narrow: Some((name.clone(), *inner)),
+                        negative_guard_narrow: None,
+                    },
+                    Type::Unknown => ConditionInfo::default(),
+                    other => {
+                        self.error(
+                            "E125",
+                            format!("if condition must be bool or Option<T>, found `{other}`"),
+                            condition.span(),
+                            "use explicit comparisons for strings, numbers, and objects",
+                        );
+                        ConditionInfo::default()
+                    }
+                }
+            }
+            _ => {
+                let actual = self.check_expr(condition, env, None);
+                match actual {
+                    Type::Bool | Type::Unknown => ConditionInfo::default(),
+                    Type::Option(_) => ConditionInfo::default(),
+                    other => {
+                        self.error(
+                            "E125",
+                            format!("if condition must be bool or Option<T>, found `{other}`"),
+                            condition.span(),
+                            "use explicit comparisons for strings, numbers, and objects",
+                        );
+                        ConditionInfo::default()
+                    }
+                }
             }
         }
     }
@@ -389,6 +586,17 @@ impl<'a> Checker<'a> {
             Expr::Float { .. } => Type::InferFloat,
             Expr::String { .. } => Type::String,
             Expr::Bool { .. } => Type::Bool,
+            Expr::Var { name, span } if name == "none" => {
+                if expected.is_some_and(|ty| !matches!(ty, Type::Option(_))) {
+                    self.error(
+                        "EOPTION001",
+                        "`none` can only be used where Option<T> is expected",
+                        *span,
+                        "return or assign `none` only in an Option<T> context",
+                    );
+                }
+                Type::None
+            }
             Expr::Var { name, span } => env.get(name).cloned().unwrap_or_else(|| {
                 self.error(
                     "E106",
@@ -440,6 +648,12 @@ impl<'a> Checker<'a> {
             Expr::StructLiteral { name, fields, span } => {
                 self.check_struct_literal(name, fields, *span, env)
             }
+            Expr::ErrorVariantLiteral {
+                error,
+                variant,
+                fields,
+                span,
+            } => self.check_error_variant_literal(error, variant, fields, *span, env),
             Expr::FieldAccess {
                 object,
                 field,
@@ -482,6 +696,23 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            Expr::Unary { op, expr, span } => match op {
+                UnaryOp::Not => {
+                    let actual = self.check_expr(expr, env, None);
+                    match actual {
+                        Type::Bool | Type::Option(_) | Type::Unknown => Type::Bool,
+                        other => {
+                            self.error(
+                                "E126",
+                                format!("`!` requires bool or Option<T>, found `{other}`"),
+                                *span,
+                                "use `!` only with booleans or Option values",
+                            );
+                            Type::Bool
+                        }
+                    }
+                }
+            },
         }
     }
 
@@ -588,6 +819,29 @@ impl<'a> Checker<'a> {
                 Type::Result(Box::new(Type::Unknown), Box::new(err_ty))
             }
             _ => {
+                if self.structs.contains_key(callee) {
+                    if args.len() != 1 {
+                        self.error(
+                            "E127",
+                            format!("type constructor `{callee}` expects one object argument"),
+                            span,
+                            "construct values with `Type({ field: value })`",
+                        );
+                        return Type::Struct(callee.to_string());
+                    }
+                    let Some(fields) = fields_from_object_literal(&args[0]) else {
+                        self.error(
+                            "E128",
+                            format!("type constructor `{callee}` expects an object literal"),
+                            args[0].span(),
+                            "construct values with `Type({ field: value })`",
+                        );
+                        self.check_expr(&args[0], env, None);
+                        return Type::Struct(callee.to_string());
+                    };
+                    return self.check_struct_literal(callee, &fields, span, env);
+                }
+
                 let Some(sig) = self.functions.get(callee).cloned() else {
                     if self.route_scope {
                         for arg in args {
@@ -685,14 +939,119 @@ impl<'a> Checker<'a> {
         Type::Struct(name.to_string())
     }
 
+    fn check_error_variant_literal(
+        &mut self,
+        error: &str,
+        variant: &str,
+        fields: &[FieldValue],
+        span: Span,
+        env: &HashMap<String, Type>,
+    ) -> Type {
+        let Some(error_sig) = self.errors.get(error).cloned() else {
+            if self.structs.contains_key(error) {
+                self.error(
+                    "EERROR004",
+                    format!("`{error}` is a type, not an error declaration"),
+                    span,
+                    "declare domain errors with `error`",
+                );
+            } else {
+                self.error(
+                    "EERROR005",
+                    format!("unknown error `{error}`"),
+                    span,
+                    "declare or import the error before constructing its variants",
+                );
+            }
+            for field in fields {
+                self.check_expr(&field.expr, env, None);
+            }
+            return Type::Unknown;
+        };
+
+        let Some(variant_sig) = error_sig.variants.get(variant) else {
+            self.error(
+                "EERROR006",
+                format!("error `{error}` has no variant `{variant}`"),
+                span,
+                "use a declared error variant",
+            );
+            for field in fields {
+                self.check_expr(&field.expr, env, None);
+            }
+            return Type::Struct(error.to_string());
+        };
+
+        self.check_field_values(
+            &format!("{error}.{variant}"),
+            &variant_sig.fields,
+            fields,
+            span,
+            env,
+        );
+        Type::Struct(error.to_string())
+    }
+
+    fn check_field_values(
+        &mut self,
+        owner: &str,
+        expected_fields: &HashMap<String, Type>,
+        fields: &[FieldValue],
+        span: Span,
+        env: &HashMap<String, Type>,
+    ) {
+        let mut seen = HashSet::new();
+        for field in fields {
+            if !seen.insert(field.name.clone()) {
+                self.error(
+                    "E119",
+                    format!("duplicate field `{}` in object literal", field.name),
+                    field.span,
+                    "provide each field once",
+                );
+                continue;
+            }
+
+            let Some(expected) = expected_fields.get(&field.name) else {
+                self.error(
+                    "E120",
+                    format!("`{owner}` has no field `{}`", field.name),
+                    field.span,
+                    "use a declared field",
+                );
+                self.check_expr(&field.expr, env, None);
+                continue;
+            };
+
+            let actual = self.check_expr(&field.expr, env, Some(expected));
+            self.expect_type(expected, &actual, field.expr.span());
+        }
+
+        for required in expected_fields.keys() {
+            if !seen.contains(required) {
+                self.error(
+                    "E121",
+                    format!("missing field `{required}` for `{owner}`"),
+                    span,
+                    "initialize every required field",
+                );
+            }
+        }
+    }
+
     fn check_type_exists(&mut self, ty: &Type, span: Span) {
         match ty {
-            Type::Struct(name) if !self.structs.contains_key(name) => self.error(
-                "E122",
-                format!("unknown type `{name}`"),
-                span,
-                "declare this type before using it",
-            ),
+            Type::Struct(name)
+                if !self.structs.contains_key(name) && !self.errors.contains_key(name) =>
+            {
+                self.error(
+                    "E122",
+                    format!("unknown type `{name}`"),
+                    span,
+                    "declare this type before using it",
+                )
+            }
+            Type::Option(inner) => self.check_type_exists(inner, span),
             Type::Result(ok, err) => {
                 self.check_type_exists(ok, span);
                 self.check_type_exists(err, span);
@@ -750,12 +1109,50 @@ fn materialize_inferred(ty: Type) -> Type {
     match ty {
         Type::InferInt => Type::I32,
         Type::InferFloat => Type::F64,
+        Type::Option(inner) => Type::Option(Box::new(materialize_inferred(*inner))),
         Type::Result(ok, err) => Type::Result(
             Box::new(materialize_inferred(*ok)),
             Box::new(materialize_inferred(*err)),
         ),
         other => other,
     }
+}
+
+#[derive(Debug, Default)]
+struct ConditionInfo {
+    positive_narrow: Option<(String, Type)>,
+    negative_guard_narrow: Option<(String, Type)>,
+}
+
+fn always_returns(statements: &[Stmt]) -> bool {
+    statements.iter().any(|stmt| match stmt {
+        Stmt::Return { .. } => true,
+        Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } if !else_body.is_empty() => always_returns(then_body) && always_returns(else_body),
+        _ => false,
+    })
+}
+
+fn fields_from_object_literal(expr: &Expr) -> Option<Vec<FieldValue>> {
+    let Expr::ObjectLiteral { fields, .. } = expr else {
+        return None;
+    };
+
+    let mut values = Vec::new();
+    for field in fields {
+        match field {
+            ObjectField::Named { name, expr, span } => values.push(FieldValue {
+                name: name.clone(),
+                expr: expr.clone(),
+                span: *span,
+            }),
+            ObjectField::Spread { .. } => return None,
+        }
+    }
+    Some(values)
 }
 
 fn numeric_result(left: &Type, right: &Type) -> Type {

@@ -121,7 +121,7 @@ route patch "/users/{id}"
   params { id: u64 }
   body UpdateUserInput
   ok 200 User
-  errors {
+  errors UserError {
     UserNotFound 404
     InvalidEmail 400
     EmailAlreadyExists 409
@@ -154,12 +154,33 @@ Current route body lowering supports:
 
 Unsupported route body syntax fails with `EHTTPLOWER001` instead of generating invalid Rust.
 
+## Absence and Errors
+
+Volt uses `Option<T>` for absence and `Result<T, E>` for fallible operations. Use `none` for absent values; when a function returns `Option<T>`, returning a plain `T` value is lowered to `Some(T)`.
+
+```ts
+export error UserError {
+  UserNotFound { message: string }
+  DatabaseError { message: string }
+}
+
+function findUser(id: u64): Result<Option<User>, UserError> {
+  if (id === 1) {
+    return ok(User({ id: 1, email: "demo@test.com", name: "Demo User" }))
+  }
+
+  return ok(none)
+}
+```
+
+Use `if (value)` and `if (!value)` to narrow `Option<T>`. Volt does not use JavaScript truthiness for strings, numbers, or objects; write explicit comparisons such as `name !== ""` or `count > 0`.
+
 ## Current Limitations
 
 - The HTTP runtime is a minimal Axum vertical slice, not a full framework.
 - No middleware, authentication, database integration, OpenAPI generation, package manager, or LLVM backend yet.
 - No classes, inheritance, decorators, macros, exceptions, `null`, `undefined`, or `any`.
-- Generic support is limited to recognizing `Result<T, E>`.
+- Generic support is limited to recognizing `Option<T>` and `Result<T, E>`.
 - The formatter is intentionally simple and prints canonical source to stdout.
 - Rust code generation is direct and readable, not optimized.
 - `vlt plan` is offline and deterministic. It does not call an LLM provider yet.
@@ -172,7 +193,7 @@ Unsupported route body syntax fails with `EHTTPLOWER001` instead of generating i
 
 1. Improve diagnostics and add recovery for more parser errors.
 2. Expand API project support around routes, services, repositories, and tests.
-3. Add assignment, loops, arrays, and `Option<T>`.
+3. Add assignment, loops, arrays, and richer control-flow analysis.
 4. Add richer formatter behavior and snapshot tests.
 5. Add backend-focused standard library pieces.
 6. Explore provider-backed `vlt plan --ai` using compact `.ai/` context.

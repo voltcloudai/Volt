@@ -14,6 +14,7 @@ pub enum TokenKind {
     String(String),
     Function,
     Type,
+    Error,
     Const,
     Let,
     Return,
@@ -34,6 +35,7 @@ pub enum TokenKind {
     Slash,
     EqEqEq,
     BangEqEq,
+    Bang,
     Lt,
     Gt,
     LtEq,
@@ -176,13 +178,7 @@ impl Lexer<'_> {
                 ));
             }
         } else {
-            self.diagnostics.push(Diagnostic::new(
-                "E006",
-                "unexpected character `!`",
-                self.source,
-                Span::new(start, start + 1),
-                Some("Volt v0.1 does not have unary `!` yet".to_string()),
-            ));
+            self.push(TokenKind::Bang, start, start + 1);
         }
     }
 
@@ -282,6 +278,7 @@ impl Lexer<'_> {
         let kind = match text.as_str() {
             "function" => TokenKind::Function,
             "type" => TokenKind::Type,
+            "error" => TokenKind::Error,
             "const" => TokenKind::Const,
             "let" => TokenKind::Let,
             "return" => TokenKind::Return,

@@ -12,8 +12,10 @@ pub enum Type {
     Bool,
     String,
     Void,
+    Option(Box<Type>),
     Result(Box<Type>, Box<Type>),
     Struct(String),
+    None,
     InferInt,
     InferFloat,
     Unknown,
@@ -49,6 +51,9 @@ impl Type {
         match (self, actual) {
             (Type::I32 | Type::I64 | Type::U32 | Type::U64, Type::InferInt) => true,
             (Type::F32 | Type::F64, Type::InferInt | Type::InferFloat) => true,
+            (Type::Option(_), Type::None) => true,
+            (Type::Option(expected), Type::Option(actual)) => expected.is_assignable_from(actual),
+            (Type::Option(expected), actual) => expected.is_assignable_from(actual),
             (Type::Result(ok_expected, err_expected), Type::Result(ok_actual, err_actual)) => {
                 ok_expected.is_assignable_from(ok_actual)
                     && err_expected.is_assignable_from(err_actual)
@@ -70,8 +75,10 @@ impl fmt::Display for Type {
             Type::Bool => write!(f, "bool"),
             Type::String => write!(f, "string"),
             Type::Void => write!(f, "void"),
+            Type::Option(inner) => write!(f, "Option<{inner}>"),
             Type::Result(ok, err) => write!(f, "Result<{ok}, {err}>"),
             Type::Struct(name) => write!(f, "{name}"),
+            Type::None => write!(f, "none"),
             Type::InferInt => write!(f, "integer"),
             Type::InferFloat => write!(f, "float"),
             Type::Unknown => write!(f, "unknown"),

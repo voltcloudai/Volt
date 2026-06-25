@@ -12,6 +12,7 @@ pub enum Decl {
     Import(ImportDecl),
     Function(FunctionDecl),
     Type(TypeDecl),
+    Error(ErrorDecl),
     Route(RouteDecl),
 }
 
@@ -63,6 +64,21 @@ pub struct FieldDecl {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorDecl {
+    pub exported: bool,
+    pub name: String,
+    pub variants: Vec<ErrorVariant>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorVariant {
+    pub name: String,
+    pub fields: Vec<FieldDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteDecl {
     pub exported: bool,
     pub method: HttpMethod,
@@ -72,6 +88,7 @@ pub struct RouteDecl {
     pub body_type: Option<TypeRef>,
     pub ok_status: u16,
     pub ok_type: TypeRef,
+    pub error_type: Option<TypeRef>,
     pub errors: Vec<RouteErrorMapping>,
     pub effects: Vec<String>,
     pub statements: Vec<Stmt>,
@@ -177,6 +194,17 @@ pub enum Expr {
         field: String,
         span: Span,
     },
+    Unary {
+        op: UnaryOp,
+        expr: Box<Expr>,
+        span: Span,
+    },
+    ErrorVariantLiteral {
+        error: String,
+        variant: String,
+        fields: Vec<FieldValue>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -192,7 +220,9 @@ impl Expr {
             | Expr::Try { span, .. }
             | Expr::ObjectLiteral { span, .. }
             | Expr::StructLiteral { span, .. }
-            | Expr::FieldAccess { span, .. } => *span,
+            | Expr::FieldAccess { span, .. }
+            | Expr::Unary { span, .. }
+            | Expr::ErrorVariantLiteral { span, .. } => *span,
         }
     }
 }
@@ -229,4 +259,9 @@ pub enum BinaryOp {
     Gt,
     LtEq,
     GtEq,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UnaryOp {
+    Not,
 }

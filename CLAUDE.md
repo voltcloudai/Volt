@@ -1,5 +1,8 @@
 # Claude Instructions
 
+- Use docs/VOLT_CURRENT_STATE.md as the source of truth for currently supported Volt syntax.
+- Use docs/VOLT_1_0_VISION.md only for long-term direction.
+- Do not implement or use a future feature just because it appears in the 1.0 vision document.
 - Use `.ai/project.md`, `.ai/symbols.json`, `.ai/routes.json`, and `.ai/source-map.json` before reading broad source context.
 - Prefer native `route method "path"` declarations for HTTP endpoints.
 - Use `{id}` path params, not Express-style `:id` params.
@@ -8,6 +11,12 @@
 - Use `let` for mutable local variables and assign only to `let` bindings.
 - Use `&&` and `||` only with bool operands; do not use JavaScript truthiness.
 - Use `Array<T>` and `[a, b, c]` for arrays; empty arrays need contextual type.
+- Use owned values; do not expose Rust references, lifetimes, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs in Volt code.
+- Do not use `ctx.arena` in user Volt code; request-scoped arenas are internal-only future implementation details.
+- Generated structs derive Clone.
+- Use `array.push(value)` only on mutable arrays.
+- Array indexing returns an owned value and may clone for non-Copy values.
+- Use field assignment only on mutable local structs.
 - Use `while (condition) { ... }` for condition-based loops.
 - Use `for item in array { ... }` to iterate over `Array<T>`.
 - Use `break` and `continue` only inside loops.

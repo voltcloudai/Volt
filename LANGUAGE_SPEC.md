@@ -2,6 +2,11 @@
 
 This document describes the v0.1 language slice.
 
+For the factual current implementation status, see [docs/VOLT_CURRENT_STATE.md](docs/VOLT_CURRENT_STATE.md).
+For the aspirational Volt 1.0 direction, see [docs/VOLT_1_0_VISION.md](docs/VOLT_1_0_VISION.md).
+
+Use `docs/VOLT_CURRENT_STATE.md` as the source of truth for currently supported Volt syntax. Do not implement or use a future feature just because it appears in the 1.0 vision document.
+
 ## Syntax
 
 Volt uses TypeScript-like syntax with explicit types.
@@ -75,6 +80,8 @@ function emptyIds(): Array<u64> {
 ```
 
 Statements do not require semicolons. Equality is `===` and `!==`; `==` is not part of the language. `&&` and `||` require bool operands and do not use JavaScript truthiness.
+
+Owned arrays support `array.push(value)` on mutable arrays and indexing with `array[index]`. Array indexing returns an owned value and generated Rust may clone for non-Copy values.
 
 ## Native HTTP Routes
 
@@ -258,15 +265,24 @@ print(value): void
 
 `switch` is reserved for normal TypeScript-like value control flow. Option handling is done with `if (value)` and `if (!value)` narrowing, not public `match` or `switch (option.kind)` patterns.
 
-## Current Limitations
-
-- No array methods, `.push`, or array indexing yet.
-- No field assignment, compound assignment, or increment/decrement yet.
-- No JavaScript truthiness.
-
 ## Memory Model
 
-The memory model is currently inherited from generated Rust. Volt does not expose borrow checking syntax in v0.1. Future versions should define ownership, copying, borrowing, and allocation rules in Volt terms rather than leaking Rust syntax into the language.
+Volt uses owned values at the language level. `const` creates immutable bindings and `let` creates mutable bindings. Only `let` bindings can be mutated.
+
+Scalars may be copied. Strings, arrays, and structs are owned values. Generated structs derive `Clone`, and generated Rust may clone owned values when needed to preserve simple Volt semantics.
+
+`Array<T>` lowers to `Vec<T>`. Array indexing returns an owned value. For non-Copy values, generated Rust may clone. Out-of-bounds indexing may panic in the current version.
+
+Field assignment requires a mutable local struct. `array.push(value)` requires a mutable local array. Loop variables remain immutable.
+
+Volt may use request-scoped allocation or arenas internally in the future, but this is an implementation detail and is not exposed as `ctx.arena` or a manual allocation API in Volt code. Volt does not expose Rust lifetimes, references, borrow checker syntax, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs.
+
+## Current Limitations
+
+- No array `map`, `filter`, or `find` helpers yet.
+- No compound assignment or increment/decrement yet.
+- No JavaScript truthiness.
+- No public arena API, Rust references, lifetimes, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs.
 
 ## Future AI-Native Tooling
 

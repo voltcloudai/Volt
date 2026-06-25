@@ -4,6 +4,14 @@ Volt is a native backend language for TypeScript developers. It uses TypeScript-
 
 The v0.1 goal is a working vertical slice: parse, type-check, generate Rust, build, and run small server-shaped programs.
 
+## Language Status
+
+- [Current supported syntax and compiler behavior](docs/VOLT_CURRENT_STATE.md)
+- [Volt 1.0 vision and long-term direction](docs/VOLT_1_0_VISION.md)
+- [Language specification](LANGUAGE_SPEC.md)
+
+Use `docs/VOLT_CURRENT_STATE.md` as the source of truth for what can be written today. `docs/VOLT_1_0_VISION.md` is aspirational direction only.
+
 ## Run The Compiler
 
 ```sh
@@ -243,13 +251,43 @@ function waitUntilReady(maxAttempts: i32): i32 {
 
 Use `while (condition) { ... }` for condition-based loops. Use `for item in array { ... }` to iterate over `Array<T>`. `for-in` currently consumes the array in generated Rust. `break` and `continue` are valid only inside loops. `switch` is normal TypeScript-like value branching, not pattern matching, and has no fallthrough. Do not use `switch` for `Option<T>`; use `if (value)` / `if (!value)`.
 
+## Phase 4.3 Owned Mutation
+
+Volt uses owned values at the language level. Generated structs derive `Clone`, `Array<T>` lowers to Rust `Vec<T>`, and the compiler may clone owned values when needed to preserve simple semantics.
+
+```ts
+type User = {
+  id: u64
+  email: string
+}
+
+function demo(): string {
+  let users: Array<User> = []
+
+  let user = User({
+    id: 1
+    email: "old@test.com"
+  })
+
+  user.email = "new@test.com"
+  users.push(user)
+
+  const first = users[0]
+  return first.email
+}
+```
+
+Only `let` bindings can be mutated. Field assignment requires a mutable local struct. `array.push(value)` requires a mutable local array. Array indexing returns an owned value and may clone for non-Copy values. Volt may use request-scoped allocation or arenas internally in the future, but this is an implementation detail and is not exposed as `ctx.arena` or a manual allocation API in Volt code.
+
 ## Current Limitations
 
 - The HTTP runtime and route handler lowering are a v0.1-level Axum vertical slice, not a full framework or production-ready runtime.
 - No middleware, authentication, database integration, OpenAPI generation, package manager, or LLVM backend yet.
 - No classes, inheritance, decorators, macros, exceptions, `null`, `undefined`, or `any`.
 - Generic support is limited to recognizing `Option<T>`, `Result<T, E>`, and `Array<T>`.
-- No array methods, `.push`, array indexing, field assignment, compound assignment, or increment/decrement yet.
+- No array `map`, `filter`, or `find` helpers yet.
+- No compound assignment or increment/decrement yet.
+- No public arena API, Rust references, lifetimes, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs.
 - The formatter is intentionally simple and prints canonical source to stdout.
 - Rust code generation is direct and readable, not optimized.
 - `vlt plan` is offline and deterministic. It does not call an LLM provider yet.
@@ -262,8 +300,8 @@ Use `while (condition) { ... }` for condition-based loops. Use `for item in arra
 
 1. Improve diagnostics and add recovery for more parser errors.
 2. Expand API project support around routes, services, repositories, and tests.
-3. Add Phase 4.3 array/object ergonomics: indexing, `.length`, `.push`, field assignment, compound assignment, and increment/decrement.
-4. Add richer formatter behavior and snapshot tests.
-5. Add backend-focused standard library pieces.
+3. Add richer formatter behavior and snapshot tests.
+4. Add backend-focused standard library pieces.
+5. Explore safe indexing, richer array helpers, and optimizer passes that reduce clones.
 6. Explore provider-backed `vlt plan --ai` using compact `.ai/` context.
 7. Explore direct native backends after the language core stabilizes.

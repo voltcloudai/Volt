@@ -17,6 +17,42 @@ fn run(args: &[&str], cwd: &Path) -> std::process::Output {
         .expect("vlt should run")
 }
 
+fn workspace_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+#[test]
+fn language_direction_docs_are_linked_and_current() {
+    let root = workspace_root();
+    let current_path = root.join("docs/VOLT_CURRENT_STATE.md");
+    let vision_path = root.join("docs/VOLT_1_0_VISION.md");
+    assert!(current_path.exists(), "missing docs/VOLT_CURRENT_STATE.md");
+    assert!(vision_path.exists(), "missing docs/VOLT_1_0_VISION.md");
+
+    let current = std::fs::read_to_string(current_path).unwrap();
+    assert!(current.contains("owned values"));
+    assert!(current.contains("array.push"));
+    assert!(current.contains("Array indexing"));
+    assert!(current.contains("Field assignment"));
+    assert!(current.contains("Generated structs derive Clone"));
+
+    let vision = std::fs::read_to_string(vision_path).unwrap();
+    assert!(vision.contains("intended production direction"));
+    assert!(vision.contains("not a list of currently implemented features"));
+
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    assert!(readme.contains("docs/VOLT_CURRENT_STATE.md"));
+    assert!(readme.contains("docs/VOLT_1_0_VISION.md"));
+
+    let spec = std::fs::read_to_string(root.join("LANGUAGE_SPEC.md")).unwrap();
+    assert!(spec.contains("docs/VOLT_CURRENT_STATE.md"));
+    assert!(spec.contains("docs/VOLT_1_0_VISION.md"));
+}
+
 #[test]
 fn new_api_creates_expected_files() {
     let dir = tempdir().unwrap();
@@ -46,6 +82,11 @@ fn new_api_creates_expected_files() {
         ".ai/symbols.json",
         ".ai/routes.json",
         ".ai/source-map.json",
+        ".ai/language-rules.md",
+        ".ai/memory-model.md",
+        ".ai/current-language.md",
+        ".ai/volt-1-0-direction.md",
+        ".ai/examples.md",
         ".ai/tasks",
         ".ai/files",
     ] {
@@ -58,6 +99,59 @@ fn new_api_creates_expected_files() {
     assert!(users_routes.contains("handler getUserRoute"));
     assert!(users_routes.contains("handler createUserRoute"));
     assert!(!users_routes.contains("app.get("));
+}
+
+#[test]
+fn new_api_scaffold_includes_phase_4_3_memory_rules() {
+    let dir = tempdir().unwrap();
+    assert!(run(&["new", "api", "my-api"], dir.path()).status.success());
+    let root = dir.path().join("my-api");
+
+    let memory_model = std::fs::read_to_string(root.join(".ai/memory-model.md")).unwrap();
+    assert!(memory_model.contains("owned values"));
+    assert!(memory_model.contains("Generated structs derive Clone"));
+    assert!(memory_model.contains("Array indexing returns an owned value"));
+
+    let language_rules = std::fs::read_to_string(root.join(".ai/language-rules.md")).unwrap();
+    assert!(language_rules.contains("array.push"));
+    assert!(language_rules.contains("Array indexing returns an owned value"));
+    assert!(language_rules.contains("field assignment"));
+
+    let agents = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
+    assert!(agents.contains("owned-value"));
+    assert!(agents.contains("array.push"));
+
+    let claude = std::fs::read_to_string(root.join("CLAUDE.md")).unwrap();
+    assert!(claude.contains("owned-value"));
+    assert!(claude.contains("array.push"));
+
+    let current_language = std::fs::read_to_string(root.join(".ai/current-language.md")).unwrap();
+    assert!(current_language.contains("source of truth"));
+    assert!(current_language.contains("Do not use `ctx.arena`"));
+
+    let all_guidance = [
+        memory_model,
+        language_rules,
+        agents,
+        claude,
+        current_language,
+        std::fs::read_to_string(root.join(".ai/volt-1-0-direction.md")).unwrap(),
+    ]
+    .join("\n");
+    for forbidden in [
+        "Use request ctx.arena",
+        "Future explicit heap ownership through `box`",
+        "Use Box",
+        "Use Rc",
+        "Use Arc",
+        "Use Rust lifetimes",
+        "Use Rust references",
+    ] {
+        assert!(
+            !all_guidance.contains(forbidden),
+            "scaffold should not contain positive guidance: {forbidden}"
+        );
+    }
 }
 
 #[test]
@@ -857,8 +951,20 @@ fn ai_prompt_generates_useful_generic_prompt() {
     assert!(stdout.contains("vlt build"));
     assert!(stdout.contains("Use Result<T, E> for fallible operations."));
     assert!(stdout.contains("Use Option<T> for absence"));
+    assert!(stdout.contains(
+        "Read `docs/VOLT_CURRENT_STATE.md` or `.ai/current-language.md` first if available."
+    ));
+    assert!(stdout.contains(
+        "Use `docs/VOLT_1_0_VISION.md` or `.ai/volt-1-0-direction.md` for direction only."
+    ));
+    assert!(stdout.contains("Use owned values."));
+    assert!(stdout.contains("Generated structs derive Clone."));
+    assert!(stdout.contains("Do not use ctx.arena in user Volt code."));
     assert!(stdout.contains("Use `let` for mutable local variables."));
     assert!(stdout.contains("Use `Array<T>` for arrays."));
+    assert!(stdout.contains("Use array.push(value) only on mutable arrays."));
+    assert!(stdout.contains("Array indexing returns an owned value and may clone under the hood."));
+    assert!(stdout.contains("Use field assignment only on mutable local structs."));
     assert!(stdout.contains("Empty arrays require contextual type"));
     assert!(stdout.contains("Use `while (condition) { ... }`"));
     assert!(stdout.contains("Use `for item in array { ... }`"));
@@ -868,6 +974,8 @@ fn ai_prompt_generates_useful_generic_prompt() {
     assert!(stdout.contains("EmailAlreadyExists 409"));
     assert!(stdout.contains("Prefer native routes over `app.get(...)` or `app.patch(...)` calls."));
     assert!(stdout.contains("Do not call external AI APIs."));
+    assert!(!stdout.contains("Use ctx.arena for request-scoped allocations"));
+    assert!(!stdout.contains("Use request ctx.arena"));
 }
 
 #[test]

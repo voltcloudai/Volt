@@ -2,6 +2,13 @@
 
 Volt's AI workflow is deterministic first.
 
+Related language docs:
+
+- [Current supported syntax and compiler behavior](VOLT_CURRENT_STATE.md)
+- [Volt 1.0 vision and long-term direction](VOLT_1_0_VISION.md)
+
+AI agents should use `docs/VOLT_CURRENT_STATE.md` as the source of truth for currently supported Volt syntax. `docs/VOLT_1_0_VISION.md` is direction only; do not implement or use a future feature just because it appears there.
+
 ```sh
 vlt plan "add update user endpoint"
 vlt ai prompt "add update user endpoint"
@@ -58,7 +65,7 @@ AI indexing and HTTP codegen are related but separate:
 
 Agents should treat route declarations as HTTP contracts and put business logic in handler functions. Inline route bodies should stay inside the current lowering subset: simple `const` bindings, `return ok(...)`, literals, field access, simple calls, and struct literals.
 
-Prompted agents should also know the current core syntax: use `let` for mutable locals, assign only to `let` bindings, keep `const` immutable, use `&&` and `||` only with bool operands, use `Array<T>` and `[a, b, c]` for arrays, annotate empty arrays such as `const ids: Array<u64> = []`, use `while (condition) { ... }` for condition-based loops, use `for item in array { ... }` over `Array<T>`, and use normal TypeScript-like `switch` for ordinary value branching. `for-in` currently consumes the array in generated Rust. `switch` is not pattern matching, has no fallthrough, and should not be used for `Option<T>`; use `if (value)` / `if (!value)` instead.
+Prompted agents should also know the current core syntax: use owned values, use `let` for mutable locals, assign only to `let` bindings, keep `const` immutable, use field assignment only on mutable struct locals, use `array.push(value)` only on mutable arrays, treat array indexing as returning an owned value, use `&&` and `||` only with bool operands, use `Array<T>` and `[a, b, c]` for arrays, annotate empty arrays such as `const ids: Array<u64> = []`, use `while (condition) { ... }` for condition-based loops, use `for item in array { ... }` over `Array<T>`, and use normal TypeScript-like `switch` for ordinary value branching. `for-in` currently consumes the array in generated Rust. `switch` is not pattern matching, has no fallthrough, and should not be used for `Option<T>`; use `if (value)` / `if (!value)` instead. Do not use `ctx.arena`; internal arenas are future implementation details only.
 
 ## Provider Interface
 
@@ -99,5 +106,6 @@ The default AI context should be compact and inspectable. Provider-backed planni
 - Route extraction uses native `route` declarations as primary metadata, with comments and simple `app.get/post/put/patch/delete(...)` calls as fallback.
 - Native route codegen supports a minimal Axum vertical slice, not middleware, auth, database integration, or OpenAPI.
 - Route handler lowering is v0.1-level and inline route body lowering is intentionally limited to the supported subset.
-- No array methods, array indexing, field assignment, or compound assignment yet.
+- No array `map`, `filter`, or `find` helpers yet.
+- No compound assignment yet.
 - Call graph data is not complete yet.

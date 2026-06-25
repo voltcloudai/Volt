@@ -1,0 +1,23 @@
+type User = {
+  id: u64
+  email: string
+}
+
+function demo(): string {
+  let users: Array<User> = []
+
+  let user = User({
+    id: 1
+    email: "old@test.com"
+  })
+
+  user.email = "new@test.com"
+  users.push(user)
+
+  const first = users[0]
+  return first.email
+}
+
+function main(): void {
+  print(demo())
+}

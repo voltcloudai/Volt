@@ -29,6 +29,8 @@ pub fn create_api_project(base: &Path, name: &str) -> std::io::Result<PathBuf> {
     write(root.join(".ai/commands.md"), COMMANDS)?;
     write(root.join(".ai/language-rules.md"), LANGUAGE_RULES)?;
     write(root.join(".ai/memory-model.md"), MEMORY_MODEL)?;
+    write(root.join(".ai/current-language.md"), CURRENT_LANGUAGE)?;
+    write(root.join(".ai/volt-1-0-direction.md"), VOLT_1_0_DIRECTION)?;
     write(root.join(".ai/routes.json"), "[]\n")?;
     write(root.join(".ai/symbols.json"), EMPTY_SYMBOLS)?;
     write(root.join(".ai/source-map.json"), EMPTY_SOURCE_MAP)?;
@@ -71,6 +73,8 @@ vlt plan "add new update user endpoint"
 ```
 
 The generated route files use Volt's native `route method "path"` syntax as HTTP contracts. Business logic lives in handler functions so AI tools can index API shape directly from source.
+
+AI agents should read `.ai/current-language.md`, `.ai/language-rules.md`, and `.ai/memory-model.md` before writing Volt code. `.ai/volt-1-0-direction.md` is long-term direction only.
 "#
     )
 }
@@ -98,6 +102,9 @@ Commands:
 - Format: `vlt fmt src/main.vlt`
 - AI index: `vlt ai index`
 - Plan task: `vlt plan "<task>"`
+Language:
+- Current source of truth: `.ai/current-language.md`
+- Direction only: `.ai/volt-1-0-direction.md`
 "#
     )
 }
@@ -105,14 +112,24 @@ Commands:
 const AGENTS: &str = r#"# Agent Instructions
 
 - This is a Volt API project.
+- Use `.ai/current-language.md` as the source of truth for currently supported Volt syntax.
+- Use `.ai/volt-1-0-direction.md` only for long-term direction.
+- Do not implement or use a future feature just because it appears in the 1.0 direction document.
 - Keep syntax TypeScript-like.
 - Do not use null, undefined, exceptions, classes, or inheritance.
 - Use Result<T, E> for fallible operations.
 - Use Option<T> for absence; prefer `return none`.
+- Use owned-value semantics.
+- Do not expose Rust references, lifetimes, borrow annotations, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs in Volt code.
+- Do not use `ctx.arena` in user Volt code; request-scoped arenas are internal-only future implementation details.
+- Generated structs derive Clone.
 - Use `let` for mutable local variables.
 - Use assignment only on `let` bindings; `const` bindings are immutable.
 - Use `&&` and `||` only with bool operands.
 - Use `Array<T>` for arrays; empty arrays require contextual type, for example `const ids: Array<u64> = []`.
+- Use `array.push(value)` only on mutable arrays.
+- Array indexing returns an owned value.
+- Use field assignment only on mutable local structs.
 - Use `while (condition) { ... }` for condition-based loops.
 - Use `for item in array { ... }` to iterate over `Array<T>`.
 - Use `break` and `continue` only inside loops.
@@ -131,13 +148,24 @@ const AGENTS: &str = r#"# Agent Instructions
 
 const CLAUDE: &str = r#"# Claude Instructions
 
+Use `.ai/current-language.md` as the source of truth for currently supported Volt syntax.
+Use `.ai/volt-1-0-direction.md` only for long-term direction.
+Do not implement or use a future feature just because it appears in the 1.0 direction document.
+
 Use `.ai/project.md`, `.ai/symbols.json`, and `.ai/routes.json` before reading source files. Prefer compact context first, then inspect only relevant modules.
 
 - Prefer native `route method "path"` declarations.
 - Treat route declarations as HTTP contracts and put business logic in handler functions.
 - Use handler argument order: params, query, body, ctx.
+- Use owned-value semantics.
+- Do not expose Rust references, lifetimes, borrow annotations, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs in Volt code.
+- Do not use `ctx.arena` in user Volt code; request-scoped arenas are internal-only future implementation details.
+- Generated structs derive Clone.
 - Use `let` for mutable local variables and assign only to `let` bindings.
 - Use `Array<T>` and `[a, b, c]` for arrays; annotate empty arrays.
+- Use `array.push(value)` only on mutable arrays.
+- Array indexing returns an owned value.
+- Use field assignment only on mutable local structs.
 - Use `while (condition) { ... }`, `for item in array { ... }`, and normal TypeScript-like `switch` for value branching.
 - Use `break` and `continue` only inside loops; do not use `switch` for Option<T>`.
 - Keep inline route bodies tiny and inside the supported Axum lowering subset.
@@ -298,6 +326,11 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 - Prefer returning the plain value from Option<T> functions; the compiler wraps it.
 - Use `if (value)` and `if (!value)` to narrow Option<T>.
 - Do not use truthiness for strings, numbers, or objects; use explicit comparisons.
+- Use owned values.
+- Generated structs derive Clone.
+- Do not use Rust references, lifetimes, borrow annotations, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs in Volt code.
+- Do not use `ctx.arena` in user Volt code.
+- Volt may use request-scoped allocation or arenas internally in the future, but this is an implementation detail and is not exposed as `ctx.arena` or a manual allocation API in Volt code.
 - Use `let` for mutable local variables.
 - Use assignment only on `let` bindings.
 - `const` bindings are immutable.
@@ -306,6 +339,10 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 - Use `Array<T>` for arrays.
 - Array literals use `[a, b, c]`.
 - Empty arrays require contextual type, e.g. `const ids: Array<u64> = []`.
+- Use `array.push(value)` only on mutable arrays.
+- Array indexing returns an owned value.
+- For non-Copy values, array indexing may clone in generated Rust.
+- Use field assignment only on mutable local structs.
 - Use `while (condition) { ... }` for condition-based loops.
 - Use `for item in array { ... }` to iterate over `Array<T>`.
 - `for-in` currently works over `Array<T>`.
@@ -317,7 +354,6 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 - No fallthrough in switch.
 - Use domain `error` declarations for typed errors.
 - Prefer typed route errors with `errors DomainError { Variant 404 }`.
-- Use request ctx.arena for request-scoped allocations.
 - Keep route input/output types explicit.
 - Use native `route method "path"` declarations for HTTP endpoints.
 - Prefer `/users/{id}` path params over `/users/:id`.
@@ -332,13 +368,77 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 
 pub const MEMORY_MODEL: &str = r#"# Memory Model
 
-Volt uses native memory management.
+Volt uses deterministic memory management through its Rust backend.
 
-Initial model:
-- Stack values by default.
-- Request-scoped allocations through `ctx.arena`.
-- Future explicit heap ownership through `box`.
-- No garbage collector in the default backend.
+Volt programs use owned values at the language level.
+
+Bindings:
+- `const` creates an immutable binding.
+- `let` creates a mutable binding.
+
+Values:
+- Scalars may be copied.
+- Strings, arrays, and structs are owned values.
+- Generated structs derive Clone.
+- The compiler may clone owned values when needed to preserve simple Volt semantics.
+
+Arrays:
+- `Array<T>` lowers to `Vec<T>`.
+- Array indexing returns an owned value.
+- For non-Copy values, generated Rust may clone.
+- `array.push(value)` requires a mutable local array.
+
+Mutation:
+- Only `let` bindings can be mutated.
+- Field assignment requires a mutable local struct.
+- Loop variables remain immutable.
+
+Implementation detail:
+- Volt may use request-scoped allocation or arenas internally in the future, but this is an implementation detail and is not exposed as `ctx.arena` or a manual allocation API in Volt code.
+- Do not use Rust references, lifetimes, borrow annotations, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs in Volt code.
+"#;
+
+pub const CURRENT_LANGUAGE: &str = r#"# Current Volt Language
+
+Use this file as the source of truth for currently supported syntax in this project.
+
+- Volt syntax is TypeScript-like.
+- Routes use native `route method "path"` declarations with `{id}` path params.
+- Use `Option<T>` and `none` for absence.
+- Use `Result<T, E>` and domain `error` declarations for fallible operations.
+- Use `if (value)` and `if (!value)` to narrow `Option<T>`.
+- Do not use JavaScript truthiness for strings, numbers, or objects.
+- Use owned values.
+- Generated structs derive Clone.
+- Do not use `ctx.arena`; arenas are internal-only future implementation details.
+- Do not use Rust references, lifetimes, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs in Volt code.
+- `const` bindings are immutable.
+- `let` bindings are mutable.
+- Assignment is only valid on mutable locals.
+- Field assignment requires a mutable local struct.
+- `Array<T>` lowers to `Vec<T>`.
+- `array.push(value)` requires a mutable local array.
+- Array indexing returns an owned value and may clone for non-Copy values.
+- Use `while`, `for item in array`, `break`, `continue`, and normal TypeScript-like `switch`.
+- Do not use `switch` for `Option<T>`.
+- Keep inline route bodies tiny; put business logic in handler functions.
+"#;
+
+pub const VOLT_1_0_DIRECTION: &str = r#"# Volt 1.0 Direction
+
+This file is direction only. Do not implement or use a future feature just because it appears here.
+
+Volt 1.0 aims to be an AI-native backend programming language for building fast APIs with TypeScript-like ergonomics and Rust-backed performance for backend workloads.
+
+Direction:
+- Backend-first and API-first.
+- Route, service, repository, types, errors, and tests per domain.
+- Explicit DTOs and typed route errors.
+- Owned-value language semantics with Rust memory details hidden from users.
+- No JavaScript runtime.
+- No exposed garbage collector.
+- No public Rust lifetimes, references, borrow checker syntax, Box, Rc, Arc, unsafe, raw pointers, manual allocation APIs, or `ctx.arena`.
+- Future features may include middleware/auth, database integrations, OpenAPI, package management, safe indexing, richer arrays, optimizer passes, internal arena optimization, incremental compilation, and LSP support.
 "#;
 
 const EMPTY_SYMBOLS: &str = r#"{
@@ -361,6 +461,27 @@ pub const EXAMPLES: &str = r#"# Examples
 ```ts
 function createUser(input: CreateUserInput): Result<User, CreateUserError> {
   return err(CreateUserError.DatabaseError({ message: "not implemented" }))
+}
+```
+
+```ts
+type User = {
+  id: u64
+  email: string
+}
+
+function demoOwnedMutation(): string {
+  let users: Array<User> = []
+  let user = User({
+    id: 1
+    email: "old@test.com"
+  })
+
+  user.email = "new@test.com"
+  users.push(user)
+
+  const first = users[0]
+  return first.email
 }
 ```
 

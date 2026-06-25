@@ -2,6 +2,9 @@
 
 - This is a Rust workspace.
 - Use `cargo test` after changes.
+- Use docs/VOLT_CURRENT_STATE.md as the source of truth for currently supported Volt syntax.
+- Use docs/VOLT_1_0_VISION.md only for long-term direction.
+- Do not implement or use a future feature just because it appears in the 1.0 vision document.
 - Keep Volt syntax TypeScript-like, not Rust-like.
 - Use native `route method "path"` syntax for HTTP endpoints.
 - Use `{id}` path params, not Express-style `:id` params.
@@ -13,6 +16,12 @@
 - Use `&&` and `||` only with bool operands.
 - Use `Array<T>` for arrays and `[a, b, c]` for array literals.
 - Empty arrays require contextual type, e.g. `const ids: Array<u64> = []`.
+- Use owned values; do not expose Rust references, lifetimes, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs in Volt code.
+- Do not use `ctx.arena` in user Volt code; request-scoped arenas are internal-only future implementation details.
+- Generated structs derive Clone.
+- Use `array.push(value)` only on mutable arrays.
+- Array indexing returns an owned value and may clone for non-Copy values.
+- Use field assignment only on mutable local structs.
 - Use `while (condition) { ... }` for condition-based loops.
 - Use `for item in array { ... }` to iterate over `Array<T>`.
 - `for-in` currently works over `Array<T>`.

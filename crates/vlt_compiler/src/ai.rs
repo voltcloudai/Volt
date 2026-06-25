@@ -1,7 +1,10 @@
 use crate::ast::{Decl, ErrorDecl, FunctionDecl, HttpMethod, RouteDecl, TypeDecl};
 use crate::diagnostics::SourceFile;
 use crate::parser::parse_source;
-use crate::scaffold::{ARCHITECTURE, COMMANDS, EXAMPLES, LANGUAGE_RULES, MEMORY_MODEL};
+use crate::scaffold::{
+    ARCHITECTURE, COMMANDS, CURRENT_LANGUAGE, EXAMPLES, LANGUAGE_RULES, MEMORY_MODEL,
+    VOLT_1_0_DIRECTION,
+};
 use crate::types::Type;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -537,6 +540,14 @@ fn render_prompt(context: &PlanContext, format: AiPromptFormat) -> String {
     out.push_str("\n## Expected behavior\n\n");
     out.push_str(&expected_behavior(&context.module));
     out.push_str("\n\n## Volt language rules\n\n");
+    out.push_str(
+        "- Read `docs/VOLT_CURRENT_STATE.md` or `.ai/current-language.md` first if available.\n",
+    );
+    out.push_str("- Use current syntax only.\n");
+    out.push_str(
+        "- Use `docs/VOLT_1_0_VISION.md` or `.ai/volt-1-0-direction.md` for direction only.\n",
+    );
+    out.push_str("- Do not implement future features unless the task explicitly asks.\n");
     for rule in prompt_language_rules() {
         out.push_str(&format!("- {rule}\n"));
     }
@@ -545,6 +556,9 @@ fn render_prompt(context: &PlanContext, format: AiPromptFormat) -> String {
     out.push_str("- Edit `*.service.vlt` or the handler function for business logic.\n");
     out.push_str("\n## Implementation steps\n\n");
     let mut steps = vec![
+        "Read `docs/VOLT_CURRENT_STATE.md` or `.ai/current-language.md` if available.".to_string(),
+        "Use `docs/VOLT_1_0_VISION.md` or `.ai/volt-1-0-direction.md` for direction only."
+            .to_string(),
         "Read `.ai/project.md`.".to_string(),
         "Read `.ai/symbols.json`.".to_string(),
         "Read `.ai/routes.json`.".to_string(),
@@ -593,6 +607,8 @@ fn ensure_ai_metadata(root: &Path) -> std::io::Result<()> {
         ".ai/routes.json",
         ".ai/source-map.json",
         ".ai/language-rules.md",
+        ".ai/current-language.md",
+        ".ai/volt-1-0-direction.md",
     ] {
         if !root.join(file).exists() {
             return Err(std::io::Error::new(
@@ -722,6 +738,11 @@ fn prompt_language_rules() -> Vec<&'static str> {
         "Use Option<T> for absence and prefer `return none` for absent values.",
         "Prefer returning a plain value from Option<T> functions; the compiler wraps it.",
         "Use `if (value)` and `if (!value)` to narrow Option<T> values.",
+        "Use owned values.",
+        "Generated structs derive Clone.",
+        "Do not use Rust references, lifetimes, borrow annotations, Box, Rc, Arc, unsafe, raw pointers, or manual allocation APIs.",
+        "Do not use ctx.arena in user Volt code.",
+        "Internal arenas are future implementation details only.",
         "Use `let` for mutable local variables.",
         "Use assignment only on `let` bindings; `const` bindings are immutable.",
         "Use `&&` and `||` only with bool operands.",
@@ -729,6 +750,9 @@ fn prompt_language_rules() -> Vec<&'static str> {
         "Use `Array<T>` for arrays.",
         "Array literals use `[a, b, c]`.",
         "Empty arrays require contextual type, e.g. `const ids: Array<u64> = []`.",
+        "Use array.push(value) only on mutable arrays.",
+        "Array indexing returns an owned value and may clone under the hood.",
+        "Use field assignment only on mutable local structs.",
         "Use `while (condition) { ... }` for condition-based loops.",
         "Use `for item in array { ... }` to iterate over `Array<T>`.",
         "for-in currently works over `Array<T>`.",
@@ -742,7 +766,6 @@ fn prompt_language_rules() -> Vec<&'static str> {
         "Prefer Result<T, DomainError> and call-style construction like `UserError.UserNotFound({ message: \"...\" })`.",
         "Prefer typed route errors: `errors UserError { UserNotFound 404 }`.",
         "Use explicit input/output route types.",
-        "Use ctx.arena for request-scoped allocations when needed.",
         "Keep generated code simple and explicit.",
         "Do not introduce unsupported TypeScript syntax.",
     ]
@@ -779,6 +802,8 @@ fn write_ai_files(root: &Path, index: &AiIndex, source_map: &SourceMap) -> std::
     std::fs::write(ai_dir.join("architecture.md"), ARCHITECTURE)?;
     std::fs::write(ai_dir.join("language-rules.md"), LANGUAGE_RULES)?;
     std::fs::write(ai_dir.join("memory-model.md"), MEMORY_MODEL)?;
+    std::fs::write(ai_dir.join("current-language.md"), CURRENT_LANGUAGE)?;
+    std::fs::write(ai_dir.join("volt-1-0-direction.md"), VOLT_1_0_DIRECTION)?;
     std::fs::write(ai_dir.join("examples.md"), EXAMPLES)?;
     for file in &source_map.files {
         std::fs::write(

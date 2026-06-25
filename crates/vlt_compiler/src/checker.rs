@@ -76,6 +76,29 @@ struct Checker<'a> {
     require_entrypoint: bool,
 }
 
+#[derive(Debug, Clone)]
+struct LocalBinding {
+    ty: Type,
+    declared_ty: Type,
+    mutable: bool,
+}
+
+type LocalEnv = HashMap<String, LocalBinding>;
+
+impl LocalBinding {
+    fn new(ty: Type, mutable: bool) -> Self {
+        Self {
+            declared_ty: ty.clone(),
+            ty,
+            mutable,
+        }
+    }
+
+    fn immutable(ty: Type) -> Self {
+        Self::new(ty, false)
+    }
+}
+
 impl<'a> Checker<'a> {
     fn new(
         program: &'a Program,
@@ -276,11 +299,20 @@ impl<'a> Checker<'a> {
         );
 
         let mut env = HashMap::new();
-        env.insert("params".to_string(), Type::Struct(params_type));
-        env.insert("query".to_string(), Type::Struct(query_type));
-        env.insert("ctx".to_string(), Type::Unknown);
+        env.insert(
+            "params".to_string(),
+            LocalBinding::immutable(Type::Struct(params_type)),
+        );
+        env.insert(
+            "query".to_string(),
+            LocalBinding::immutable(Type::Struct(query_type)),
+        );
+        env.insert("ctx".to_string(), LocalBinding::immutable(Type::Unknown));
         if let Some(body_type) = &route.body_type {
-            env.insert("body".to_string(), body_type.clone());
+            env.insert(
+                "body".to_string(),
+                LocalBinding::immutable(body_type.clone()),
+            );
         }
 
         let err_type = route.error_type.clone().unwrap_or(Type::Unknown);
@@ -548,7 +580,13 @@ impl<'a> Checker<'a> {
         let mut env = HashMap::new();
         for param in &function.params {
             self.check_type_exists(&param.ty, param.span);
-            if env.insert(param.name.clone(), param.ty.clone()).is_some() {
+            if env
+                .insert(
+                    param.name.clone(),
+                    LocalBinding::immutable(param.ty.clone()),
+                )
+                .is_some()
+            {
                 self.error(
                     "E104",
                     format!("duplicate parameter `{}`", param.name),
@@ -563,24 +601,67 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_stmt(&mut self, stmt: &Stmt, return_type: &Type, env: &mut HashMap<String, Type>) {
+    fn check_stmt(&mut self, stmt: &Stmt, return_type: &Type, env: &mut LocalEnv) {
         match stmt {
             Stmt::Var {
+                mutable,
                 name,
                 annotation,
                 expr,
                 span,
-                ..
             } => {
                 if let Some(annotation) = annotation {
                     self.check_type_exists(annotation, *span);
                     let actual = self.check_expr(expr, env, Some(annotation));
                     self.expect_type(annotation, &actual, expr.span());
-                    env.insert(name.clone(), annotation.clone());
+                    env.insert(
+                        name.clone(),
+                        LocalBinding::new(annotation.clone(), *mutable),
+                    );
                 } else {
                     let actual = self.check_expr(expr, env, None);
-                    env.insert(name.clone(), materialize_inferred(actual));
+                    let ty = materialize_inferred(actual);
+                    env.insert(name.clone(), LocalBinding::new(ty, *mutable));
                 }
+            }
+            Stmt::Assign { name, expr, span } => {
+                let Some(binding) = env.get(name).cloned() else {
+                    self.error(
+                        "E130",
+                        format!("cannot assign to unknown variable `{name}`"),
+                        *span,
+                        "declare the variable with `let` before assigning to it",
+                    );
+                    self.check_expr(expr, env, None);
+                    return;
+                };
+
+                if !binding.mutable {
+                    self.error(
+                        "E131",
+                        format!("cannot assign to immutable variable `{name}`"),
+                        *span,
+                        "use `let` for mutable local variables",
+                    );
+                }
+
+                let actual = self.check_expr(expr, env, Some(&binding.declared_ty));
+                if !binding.declared_ty.is_assignable_from(&actual) {
+                    self.error(
+                        "E132",
+                        format!(
+                            "assignment type mismatch: expected `{}`, found `{actual}`",
+                            binding.declared_ty
+                        ),
+                        expr.span(),
+                        format!("assign a value of type `{}`", binding.declared_ty),
+                    );
+                }
+
+                env.insert(
+                    name.clone(),
+                    LocalBinding::new(binding.declared_ty, binding.mutable),
+                );
             }
             Stmt::Return { expr, .. } => {
                 if matches!(return_type, Type::Void) {
@@ -605,7 +686,7 @@ impl<'a> Checker<'a> {
 
                 let mut then_env = env.clone();
                 if let Some((name, narrowed)) = &condition_info.positive_narrow {
-                    then_env.insert(name.clone(), narrowed.clone());
+                    narrow_local(&mut then_env, name, narrowed.clone());
                 }
                 for stmt in then_body {
                     self.check_stmt(stmt, return_type, &mut then_env);
@@ -617,7 +698,7 @@ impl<'a> Checker<'a> {
 
                 if else_body.is_empty() && always_returns(then_body) {
                     if let Some((name, narrowed)) = condition_info.negative_guard_narrow {
-                        env.insert(name, narrowed);
+                        narrow_local(env, &name, narrowed);
                     }
                 }
             }
@@ -627,7 +708,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_condition(&mut self, condition: &Expr, env: &HashMap<String, Type>) -> ConditionInfo {
+    fn check_condition(&mut self, condition: &Expr, env: &LocalEnv) -> ConditionInfo {
         match condition {
             Expr::Unary {
                 op: UnaryOp::Not,
@@ -695,12 +776,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_expr(
-        &mut self,
-        expr: &Expr,
-        env: &HashMap<String, Type>,
-        expected: Option<&Type>,
-    ) -> Type {
+    fn check_expr(&mut self, expr: &Expr, env: &LocalEnv, expected: Option<&Type>) -> Type {
         match expr {
             Expr::Int { .. } => Type::InferInt,
             Expr::Float { .. } => Type::InferFloat,
@@ -717,15 +793,18 @@ impl<'a> Checker<'a> {
                 }
                 Type::None
             }
-            Expr::Var { name, span } => env.get(name).cloned().unwrap_or_else(|| {
-                self.error(
-                    "E106",
-                    format!("unknown variable `{name}`"),
-                    *span,
-                    "declare it with `const` or `let` before use",
-                );
-                Type::Unknown
-            }),
+            Expr::Var { name, span } => env
+                .get(name)
+                .map(|binding| binding.ty.clone())
+                .unwrap_or_else(|| {
+                    self.error(
+                        "E106",
+                        format!("unknown variable `{name}`"),
+                        *span,
+                        "declare it with `const` or `let` before use",
+                    );
+                    Type::Unknown
+                }),
             Expr::Binary {
                 left,
                 op,
@@ -764,6 +843,9 @@ impl<'a> Checker<'a> {
                     }
                 }
                 Type::Unknown
+            }
+            Expr::ArrayLiteral { elements, span } => {
+                self.check_array_literal(elements, *span, env, expected)
             }
             Expr::StructLiteral { name, fields, span } => {
                 self.check_struct_literal(name, fields, *span, env)
@@ -879,7 +961,88 @@ impl<'a> Checker<'a> {
                     Type::Bool
                 }
             }
+            BinaryOp::And | BinaryOp::Or => {
+                if matches!(left, Type::Bool | Type::Unknown)
+                    && matches!(right, Type::Bool | Type::Unknown)
+                {
+                    Type::Bool
+                } else {
+                    self.error(
+                        "E133",
+                        format!(
+                            "boolean operator requires bool operands, found `{left}` and `{right}`"
+                        ),
+                        span,
+                        "use `&&` and `||` only with bool values",
+                    );
+                    Type::Bool
+                }
+            }
         }
+    }
+
+    fn check_array_literal(
+        &mut self,
+        elements: &[Expr],
+        span: Span,
+        env: &LocalEnv,
+        expected: Option<&Type>,
+    ) -> Type {
+        if let Some(expected) = expected {
+            let Type::Array(inner) = expected else {
+                self.error(
+                    "E142",
+                    format!("expected array type, found `{expected}`"),
+                    span,
+                    "use an `Array<T>` contextual type for array literals",
+                );
+                for element in elements {
+                    self.check_expr(element, env, None);
+                }
+                return Type::Unknown;
+            };
+
+            for element in elements {
+                let actual = self.check_expr(element, env, Some(inner));
+                self.expect_type(inner, &actual, element.span());
+            }
+            return Type::Array(Box::new((**inner).clone()));
+        }
+
+        let Some((first, rest)) = elements.split_first() else {
+            self.error(
+                "E140",
+                "cannot infer type of empty array",
+                span,
+                "add a contextual type, for example `const ids: Array<u64> = []`",
+            );
+            return Type::Array(Box::new(Type::Unknown));
+        };
+
+        let first_ty = materialize_inferred(self.check_expr(first, env, None));
+        if matches!(first_ty, Type::None | Type::Unknown) {
+            self.error(
+                "E140",
+                "cannot infer array element type",
+                span,
+                "add an `Array<T>` annotation so contextual typing can be used",
+            );
+            return Type::Array(Box::new(Type::Unknown));
+        }
+
+        for element in rest {
+            let actual = self.check_expr(element, env, Some(&first_ty));
+            if !first_ty.is_assignable_from(&actual) {
+                self.error(
+                    "E141",
+                    format!("array elements must have the same type, expected `{first_ty}`"),
+                    element.span(),
+                    "use values with one shared element type",
+                );
+            }
+        }
+
+        Type::Array(Box::new(first_ty))
     }
 
     fn check_call(
@@ -887,7 +1050,7 @@ impl<'a> Checker<'a> {
         callee: &str,
         args: &[Expr],
         span: Span,
-        env: &HashMap<String, Type>,
+        env: &LocalEnv,
         expected: Option<&Type>,
     ) -> Type {
         match callee {
@@ -1006,7 +1169,7 @@ impl<'a> Checker<'a> {
         name: &str,
         fields: &[FieldValue],
         span: Span,
-        env: &HashMap<String, Type>,
+        env: &LocalEnv,
     ) -> Type {
         let Some(struct_sig) = self.structs.get(name).cloned() else {
             self.error(
@@ -1065,7 +1228,7 @@ impl<'a> Checker<'a> {
         variant: &str,
         fields: &[FieldValue],
         span: Span,
-        env: &HashMap<String, Type>,
+        env: &LocalEnv,
     ) -> Type {
         let Some(error_sig) = self.errors.get(error).cloned() else {
             if self.structs.contains_key(error) {
@@ -1118,7 +1281,7 @@ impl<'a> Checker<'a> {
         expected_fields: &HashMap<String, Type>,
         fields: &[FieldValue],
         span: Span,
-        env: &HashMap<String, Type>,
+        env: &LocalEnv,
     ) {
         let mut seen = HashSet::new();
         for field in fields {
@@ -1176,6 +1339,7 @@ impl<'a> Checker<'a> {
                 self.check_type_exists(ok, span);
                 self.check_type_exists(err, span);
             }
+            Type::Array(inner) => self.check_type_exists(inner, span),
             _ => {}
         }
     }
@@ -1234,6 +1398,7 @@ fn materialize_inferred(ty: Type) -> Type {
             Box::new(materialize_inferred(*ok)),
             Box::new(materialize_inferred(*err)),
         ),
+        Type::Array(inner) => Type::Array(Box::new(materialize_inferred(*inner))),
         other => other,
     }
 }
@@ -1254,6 +1419,12 @@ fn always_returns(statements: &[Stmt]) -> bool {
         } if !else_body.is_empty() => always_returns(then_body) && always_returns(else_body),
         _ => false,
     })
+}
+
+fn narrow_local(env: &mut LocalEnv, name: &str, ty: Type) {
+    if let Some(binding) = env.get_mut(name) {
+        binding.ty = ty;
+    }
 }
 
 fn fields_from_object_literal(expr: &Expr) -> Option<Vec<FieldValue>> {

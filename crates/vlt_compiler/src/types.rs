@@ -14,6 +14,7 @@ pub enum Type {
     Void,
     Option(Box<Type>),
     Result(Box<Type>, Box<Type>),
+    Array(Box<Type>),
     Struct(String),
     None,
     InferInt,
@@ -58,6 +59,7 @@ impl Type {
                 ok_expected.is_assignable_from(ok_actual)
                     && err_expected.is_assignable_from(err_actual)
             }
+            (Type::Array(expected), Type::Array(actual)) => expected.is_assignable_from(actual),
             _ => false,
         }
     }
@@ -77,6 +79,7 @@ impl fmt::Display for Type {
             Type::Void => write!(f, "void"),
             Type::Option(inner) => write!(f, "Option<{inner}>"),
             Type::Result(ok, err) => write!(f, "Result<{ok}, {err}>"),
+            Type::Array(inner) => write!(f, "Array<{inner}>"),
             Type::Struct(name) => write!(f, "{name}"),
             Type::None => write!(f, "none"),
             Type::InferInt => write!(f, "integer"),

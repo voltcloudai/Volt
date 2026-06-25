@@ -348,16 +348,22 @@ impl AxumLowering<'_> {
                 Stmt::Var {
                     mutable,
                     name,
+                    annotation,
                     expr,
                     span,
-                    ..
                 } => {
                     let Some(value) = self.lower_route_expr(expr) else {
                         self.unsupported(*span);
                         continue;
                     };
                     let mutability = if *mutable { " mut" } else { "" };
-                    out.push_str(&format!("    let{mutability} {name} = {value};\n"));
+                    let annotation = annotation
+                        .as_ref()
+                        .map(|ty| format!(": {}", rust_type(ty)))
+                        .unwrap_or_default();
+                    out.push_str(&format!(
+                        "    let{mutability} {name}{annotation} = {value};\n"
+                    ));
                 }
                 Stmt::Return { expr, span } => {
                     let Some(ok_expr) = route_ok_expr(expr) else {
@@ -382,6 +388,13 @@ impl AxumLowering<'_> {
             Expr::String { value, .. } => Some(format!("{value:?}.to_string()")),
             Expr::Bool { value, .. } => Some(value.to_string()),
             Expr::Var { name, .. } => Some(name.clone()),
+            Expr::ArrayLiteral { elements, .. } => {
+                let mut lowered = Vec::new();
+                for element in elements {
+                    lowered.push(self.lower_route_expr(element)?);
+                }
+                Some(format!("vec![{}]", lowered.join(", ")))
+            }
             Expr::FieldAccess { object, field, .. } => {
                 let base = self.lower_route_expr(object)?;
                 Some(format!("{base}.{field}"))
@@ -640,14 +653,25 @@ fn emit_stmt(
             ..
         } => {
             let mutability = if *mutable { " mut" } else { "" };
+            let annotation_text = annotation
+                .as_ref()
+                .map(|ty| format!(": {}", rust_type(ty)))
+                .unwrap_or_default();
             out.push_str(&format!(
-                "{pad}let{mutability} {name} = {};\n",
+                "{pad}let{mutability} {name}{annotation_text} = {};\n",
                 emit_expr_expected(expr, annotation.as_ref(), env, symbols)
             ));
             let ty = annotation
                 .clone()
                 .unwrap_or_else(|| materialize_codegen_type(infer_expr_type(expr, env, symbols)));
             env.insert(name.clone(), ty);
+        }
+        Stmt::Assign { name, expr, .. } => {
+            let expected = env.get(name);
+            out.push_str(&format!(
+                "{pad}{name} = {};\n",
+                emit_expr_expected(expr, expected, env, symbols)
+            ));
         }
         Stmt::Return { expr, .. } => {
             out.push_str(&format!(
@@ -737,6 +761,17 @@ fn emit_expr_expected(
     env: &HashMap<String, Type>,
     symbols: &CodegenSymbols,
 ) -> String {
+    if let Some(Type::Array(inner)) = expected {
+        if let Expr::ArrayLiteral { elements, .. } = expr {
+            let values = elements
+                .iter()
+                .map(|element| emit_expr_expected(element, Some(inner), env, symbols))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return format!("vec![{values}]");
+        }
+    }
+
     if let Some(Type::Option(inner)) = expected {
         if matches!(expr, Expr::Var { name, .. } if name == "none") {
             return "None".to_string();
@@ -850,6 +885,14 @@ fn emit_expr(expr: &Expr, env: &HashMap<String, Type>, symbols: &CodegenSymbols)
                 .join(", ");
             format!("{{ {body} }}")
         }
+        Expr::ArrayLiteral { elements, .. } => {
+            let body = elements
+                .iter()
+                .map(|element| emit_expr(element, env, symbols))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("vec![{body}]")
+        }
         Expr::StructLiteral { name, fields, .. } => {
             let body = fields
                 .iter()
@@ -897,7 +940,9 @@ fn infer_expr_type(expr: &Expr, env: &HashMap<String, Type>, symbols: &CodegenSy
             | BinaryOp::Lt
             | BinaryOp::Gt
             | BinaryOp::LtEq
-            | BinaryOp::GtEq => Type::Bool,
+            | BinaryOp::GtEq
+            | BinaryOp::And
+            | BinaryOp::Or => Type::Bool,
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => Type::Unknown,
         },
         Expr::Call { callee, args, .. } if callee == "ok" && args.len() == 1 => Type::Result(
@@ -921,6 +966,13 @@ fn infer_expr_type(expr: &Expr, env: &HashMap<String, Type>, symbols: &CodegenSy
             _ => Type::Unknown,
         },
         Expr::ObjectLiteral { .. } => Type::Unknown,
+        Expr::ArrayLiteral { elements, .. } => {
+            let inner = elements
+                .first()
+                .map(|element| materialize_codegen_type(infer_expr_type(element, env, symbols)))
+                .unwrap_or(Type::Unknown);
+            Type::Array(Box::new(inner))
+        }
         Expr::StructLiteral { name, .. } => Type::Struct(name.clone()),
         Expr::FieldAccess { object, field, .. } => match infer_expr_type(object, env, symbols) {
             Type::Struct(name) => symbols
@@ -945,6 +997,7 @@ fn materialize_codegen_type(ty: Type) -> Type {
             Box::new(materialize_codegen_type(*ok)),
             Box::new(materialize_codegen_type(*err)),
         ),
+        Type::Array(inner) => Type::Array(Box::new(materialize_codegen_type(*inner))),
         other => other,
     }
 }
@@ -1054,6 +1107,7 @@ fn route_ok_expr(expr: &Expr) -> Option<&Expr> {
 fn stmt_span(stmt: &Stmt) -> Span {
     match stmt {
         Stmt::Var { span, .. }
+        | Stmt::Assign { span, .. }
         | Stmt::Return { span, .. }
         | Stmt::If { span, .. }
         | Stmt::Expr { span, .. } => *span,
@@ -1092,6 +1146,8 @@ fn rust_binary_op(op: BinaryOp) -> &'static str {
         BinaryOp::Gt => ">",
         BinaryOp::LtEq => "<=",
         BinaryOp::GtEq => ">=",
+        BinaryOp::And => "&&",
+        BinaryOp::Or => "||",
     }
 }
 
@@ -1108,6 +1164,7 @@ fn rust_type(ty: &Type) -> String {
         Type::Void => "()".to_string(),
         Type::Option(inner) => format!("Option<{}>", rust_type(inner)),
         Type::Result(ok, err) => format!("Result<{}, {}>", rust_type(ok), rust_type(err)),
+        Type::Array(inner) => format!("Vec<{}>", rust_type(inner)),
         Type::Struct(name) if name == "Ctx" => "RequestCtx".to_string(),
         Type::Struct(name) => name.clone(),
         Type::None => "()".to_string(),

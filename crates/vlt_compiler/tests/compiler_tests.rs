@@ -4,8 +4,8 @@ use vlt_compiler::ast::{Decl, Expr, HttpMethod, Stmt};
 use vlt_compiler::project::run_file;
 use vlt_compiler::types::Type;
 use vlt_compiler::{
-    check_program, check_program_with_imports, generate_axum_server, generate_rust, parse_source,
-    DiagnosticBag, ExternalSymbols, SourceFile,
+    check_program, check_program_with_imports, format_program, generate_axum_server, generate_rust,
+    parse_source, DiagnosticBag, ExternalSymbols, SourceFile,
 };
 
 fn source(text: &str) -> SourceFile {
@@ -137,6 +137,288 @@ function getUserRoute(): void {
     assert!(rust.contains("#![allow(unused_variables)]"));
     assert!(rust.contains("#![allow(dead_code)]"));
     assert!(rust.contains("#![allow(unused_imports)]"));
+}
+
+#[test]
+fn parses_let_bindings() {
+    let program = parse(
+        r#"
+function counter(): i32 {
+  let count = 0
+  let next: i32 = count + 1
+  return next
+}
+"#,
+    );
+
+    let Decl::Function(function) = &program.declarations[0] else {
+        panic!("expected function");
+    };
+    assert!(matches!(
+        &function.body[0],
+        Stmt::Var {
+            mutable: true,
+            name,
+            annotation: None,
+            ..
+        } if name == "count"
+    ));
+    assert!(matches!(
+        &function.body[1],
+        Stmt::Var {
+            mutable: true,
+            name,
+            annotation: Some(Type::I32),
+            ..
+        } if name == "next"
+    ));
+}
+
+#[test]
+fn mutable_assignment_checks_and_generates() {
+    let source = source(
+        r#"
+function counter(): i32 {
+  let count = 0
+  count = count + 1
+  return count
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+    let rust = generate_rust(&program);
+    assert!(rust.contains("let mut count = 0;"));
+    assert!(rust.contains("count = count + 1;"));
+}
+
+#[test]
+fn const_binding_stays_immutable() {
+    let source = source(
+        r#"
+function bad(): i32 {
+  const count = 0
+  count = 1
+  return count
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_without_entrypoint(&program, &source).expect_err("program should fail");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "E131"));
+}
+
+#[test]
+fn assignment_errors_are_reported() {
+    for (text, code) in [
+        (r#"function bad(): void { missing = 1 }"#, "E130"),
+        (
+            r#"function bad(): void { let count: i32 = 0 count = "wrong" }"#,
+            "E132",
+        ),
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(
+            diagnostics
+                .all()
+                .iter()
+                .any(|diagnostic| diagnostic.code == code),
+            "expected diagnostic {code}"
+        );
+    }
+}
+
+#[test]
+fn boolean_operators_parse_check_and_generate() {
+    let source = source(
+        r#"
+function canUpdate(isAdmin: bool, isOwner: bool): bool {
+  return isAdmin || isOwner
+}
+
+function isValid(email: string, name: string): bool {
+  return email !== "" && name !== ""
+}
+
+function guarded(isAdmin: bool, isOwner: bool): string {
+  if (isAdmin && isOwner) {
+    return "yes"
+  }
+  return "no"
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+    let rust = generate_rust(&program);
+    assert!(rust.contains("return isAdmin || isOwner;"));
+    assert!(rust.contains("return email != \"\".to_string() && name != \"\".to_string();"));
+    assert!(rust.contains("if isAdmin && isOwner {"));
+}
+
+#[test]
+fn boolean_operators_reject_non_bool_operands() {
+    for text in [
+        r#"function bad(email: string): bool { return email || true }"#,
+        r#"function bad(count: i32): bool { return count && true }"#,
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(diagnostics
+            .all()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "E133"));
+    }
+}
+
+#[test]
+fn parses_array_types_and_literals() {
+    let program = parse(
+        r#"
+type User = { id: u64 }
+error UserError { UserNotFound { message: string } }
+
+function ids(): Array<u64> {
+  return [1, 2, 3]
+}
+
+function nested(): Array<Option<User>> {
+  return [none]
+}
+
+function nestedResult(): Array<Result<User, UserError>> {
+  return []
+}
+"#,
+    );
+
+    let Decl::Function(ids) = &program.declarations[2] else {
+        panic!("expected function");
+    };
+    assert_eq!(ids.return_type, Type::Array(Box::new(Type::U64)));
+
+    let Decl::Function(nested) = &program.declarations[3] else {
+        panic!("expected function");
+    };
+    assert_eq!(
+        nested.return_type,
+        Type::Array(Box::new(Type::Option(Box::new(Type::Struct(
+            "User".to_string()
+        )))))
+    );
+    assert!(matches!(
+        &ids.body[0],
+        Stmt::Return {
+            expr: Expr::ArrayLiteral { .. },
+            ..
+        }
+    ));
+
+    let Decl::Function(nested_result) = &program.declarations[4] else {
+        panic!("expected function");
+    };
+    assert_eq!(
+        nested_result.return_type,
+        Type::Array(Box::new(Type::Result(
+            Box::new(Type::Struct("User".to_string())),
+            Box::new(Type::Struct("UserError".to_string()))
+        )))
+    );
+}
+
+#[test]
+fn array_literals_check_and_codegen() {
+    let source = source(
+        r#"
+type User = { id: u64, email: string }
+
+function ids(): Array<u64> {
+  return [1, 2, 3]
+}
+
+function names(): Array<string> {
+  return ["Carlos", "Ana"]
+}
+
+function users(): Array<User> {
+  return [
+    User({ id: 1, email: "a@test.com" }),
+    User({ id: 2, email: "b@test.com" }),
+  ]
+}
+
+function emptyIds(): Array<u64> {
+  const ids: Array<u64> = []
+  return ids
+}
+
+function maybeUsers(): Array<Option<User>> {
+  return [none]
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+    let rust = generate_rust(&program);
+    assert!(rust.contains("fn ids() -> Vec<u64>"));
+    assert!(rust.contains("return vec![1, 2, 3];"));
+    assert!(rust.contains("return vec![\"Carlos\".to_string(), \"Ana\".to_string()];"));
+    assert!(rust.contains("let ids: Vec<u64> = vec![];"));
+    assert!(rust.contains("return vec![None];"));
+}
+
+#[test]
+fn array_literal_errors_are_reported() {
+    for (text, code) in [
+        (
+            r#"function bad(): void { const values = [1, "x"] }"#,
+            "E141",
+        ),
+        (r#"function bad(): void { const values = [] }"#, "E140"),
+        (r#"function bad(): string { return [] }"#, "E142"),
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(
+            diagnostics
+                .all()
+                .iter()
+                .any(|diagnostic| diagnostic.code == code),
+            "expected diagnostic {code}"
+        );
+    }
+}
+
+#[test]
+fn formatter_handles_phase_4_1_syntax() {
+    let program = parse(
+        r#"
+function demo(isAdmin: bool, isOwner: bool): Array<u64> {
+  let count = 0
+  count = count + 1
+  const ids: Array<u64> = [1, 2, 3]
+  if (isAdmin || isOwner) {
+    return ids
+  }
+  return []
+}
+"#,
+    );
+    let formatted = format_program(&program);
+    assert!(formatted.contains("let count = 0"));
+    assert!(formatted.contains("count = count + 1"));
+    assert!(formatted.contains("isAdmin || isOwner"));
+    assert!(formatted.contains("const ids: Array<u64> = [1, 2, 3]"));
 }
 
 #[test]

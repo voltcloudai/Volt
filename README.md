@@ -176,12 +176,40 @@ function findUser(id: u64): Result<Option<User>, UserError> {
 
 Use `if (value)` and `if (!value)` to narrow `Option<T>`. Volt does not use JavaScript truthiness for strings, numbers, or objects; write explicit comparisons such as `name !== ""` or `count > 0`.
 
+## Phase 4.1 Core Syntax
+
+Volt supports mutable local variables with `let`, assignment to `let` bindings, boolean `&&`/`||`, and `Array<T>` literals.
+
+```ts
+function canUpdate(isAdmin: bool, isOwner: bool): bool {
+  return isAdmin || isOwner
+}
+
+function countAttempts(): i32 {
+  let attempts = 0
+  attempts = attempts + 1
+  return attempts
+}
+
+function defaultIds(): Array<u64> {
+  return [1, 2, 3]
+}
+
+function emptyIds(): Array<u64> {
+  const ids: Array<u64> = []
+  return ids
+}
+```
+
+`const` bindings are immutable. `&&` and `||` require bool operands; Volt still does not use JavaScript truthiness. `Array<T>` lowers to Rust `Vec<T>`, and array literals lower to `vec![...]`.
+
 ## Current Limitations
 
 - The HTTP runtime and route handler lowering are a v0.1-level Axum vertical slice, not a full framework or production-ready runtime.
 - No middleware, authentication, database integration, OpenAPI generation, package manager, or LLVM backend yet.
 - No classes, inheritance, decorators, macros, exceptions, `null`, `undefined`, or `any`.
-- Generic support is limited to recognizing `Option<T>` and `Result<T, E>`.
+- Generic support is limited to recognizing `Option<T>`, `Result<T, E>`, and `Array<T>`.
+- No for-in loops, while loops, switch, array methods, `.push`, field assignment, compound assignment, or increment/decrement yet.
 - The formatter is intentionally simple and prints canonical source to stdout.
 - Rust code generation is direct and readable, not optimized.
 - `vlt plan` is offline and deterministic. It does not call an LLM provider yet.
@@ -194,7 +222,7 @@ Use `if (value)` and `if (!value)` to narrow `Option<T>`. Volt does not use Java
 
 1. Improve diagnostics and add recovery for more parser errors.
 2. Expand API project support around routes, services, repositories, and tests.
-3. Add assignment, loops, arrays, and richer control-flow analysis.
+3. Add Phase 4.2 control flow: for-in loops, while loops, and normal TypeScript-like switch.
 4. Add richer formatter behavior and snapshot tests.
 5. Add backend-focused standard library pieces.
 6. Explore provider-backed `vlt plan --ai` using compact `.ai/` context.

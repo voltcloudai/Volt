@@ -722,7 +722,13 @@ fn prompt_language_rules() -> Vec<&'static str> {
         "Use Option<T> for absence and prefer `return none` for absent values.",
         "Prefer returning a plain value from Option<T> functions; the compiler wraps it.",
         "Use `if (value)` and `if (!value)` to narrow Option<T> values.",
+        "Use `let` for mutable local variables.",
+        "Use assignment only on `let` bindings; `const` bindings are immutable.",
+        "Use `&&` and `||` only with bool operands.",
         "Do not use truthiness for strings, numbers, or objects; use explicit comparisons.",
+        "Use `Array<T>` for arrays.",
+        "Array literals use `[a, b, c]`.",
+        "Empty arrays require contextual type, e.g. `const ids: Array<u64> = []`.",
         "Use `error` declarations for domain errors instead of random strings.",
         "Prefer Result<T, DomainError> and call-style construction like `UserError.UserNotFound({ message: \"...\" })`.",
         "Prefer typed route errors: `errors UserError { UserNotFound 404 }`.",
@@ -1710,6 +1716,7 @@ fn type_to_string(ty: &Type) -> String {
     match ty {
         Type::Option(inner) => format!("Option<{}>", type_to_string(inner)),
         Type::Result(ok, err) => format!("Result<{}, {}>", type_to_string(ok), type_to_string(err)),
+        Type::Array(inner) => format!("Array<{}>", type_to_string(inner)),
         other => other.to_string(),
     }
 }

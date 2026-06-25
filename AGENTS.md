@@ -8,6 +8,11 @@
 - Do not use `null` or `undefined`; use `Option<T>` and `none` for absence.
 - Prefer returning a plain value from `Option<T>` functions; the compiler wraps it.
 - Use `if (value)` and `if (!value)` to narrow `Option<T>`.
+- Use `let` for mutable local variables.
+- Use assignment only on `let` bindings; `const` bindings are immutable.
+- Use `&&` and `||` only with bool operands.
+- Use `Array<T>` for arrays and `[a, b, c]` for array literals.
+- Empty arrays require contextual type, e.g. `const ids: Array<u64> = []`.
 - Do not use truthiness for strings, numbers, or objects; use explicit comparisons.
 - Use `error` declarations for domain errors and prefer `Result<T, DomainError>`.
 - Prefer call-style error construction, e.g. `UserError.UserNotFound({ message: "..." })`.
@@ -20,4 +25,4 @@
 - Prefer small compiler passes: parse, check, codegen.
 - Keep generated Rust simple and readable.
 - Keep v0.1 focused on the vertical slice: parse, check, generate Rust, build, run.
-- Do not add middleware, auth, database integration, OpenAPI, borrow checking, a package manager, or an LLVM backend until the core language is ready.
+- Do not add loops, switch, middleware, auth, database integration, OpenAPI, borrow checking, a package manager, or an LLVM backend until the core language is ready.

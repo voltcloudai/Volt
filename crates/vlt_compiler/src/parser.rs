@@ -531,12 +531,21 @@ impl Parser<'_> {
             TokenKind::Let => self.parse_var(true),
             TokenKind::Return => self.parse_return(),
             TokenKind::If => self.parse_if(),
+            TokenKind::Ident(_) if self.peek_next_is(TokenKindName::Equals) => self.parse_assign(),
             _ => {
                 let expr = self.parse_expr();
                 let span = expr.span();
                 Stmt::Expr { expr, span }
             }
         }
+    }
+
+    fn parse_assign(&mut self) -> Stmt {
+        let (name, name_span) = self.expect_ident("expected assignment target");
+        self.expect(TokenKindName::Equals, "expected `=` in assignment");
+        let expr = self.parse_expr();
+        let span = name_span.merge(expr.span());
+        Stmt::Assign { name, expr, span }
     }
 
     fn parse_var(&mut self, mutable: bool) -> Stmt {
@@ -602,7 +611,37 @@ impl Parser<'_> {
     }
 
     fn parse_expr(&mut self) -> Expr {
-        self.parse_equality()
+        self.parse_or()
+    }
+
+    fn parse_or(&mut self) -> Expr {
+        let mut expr = self.parse_and();
+        while self.eat(TokenKindName::PipePipe) {
+            let right = self.parse_and();
+            let span = expr.span().merge(right.span());
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op: BinaryOp::Or,
+                right: Box::new(right),
+                span,
+            };
+        }
+        expr
+    }
+
+    fn parse_and(&mut self) -> Expr {
+        let mut expr = self.parse_equality();
+        while self.eat(TokenKindName::AmpAmp) {
+            let right = self.parse_equality();
+            let span = expr.span().merge(right.span());
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op: BinaryOp::And,
+                right: Box::new(right),
+                span,
+            };
+        }
+        expr
     }
 
     fn parse_equality(&mut self) -> Expr {
@@ -775,6 +814,7 @@ impl Parser<'_> {
                 }
             }
             TokenKind::LBrace => self.parse_object_literal(token.span),
+            TokenKind::LBracket => self.parse_array_literal(token.span),
             TokenKind::LParen => {
                 let expr = self.parse_expr();
                 self.expect(TokenKindName::RParen, "expected `)` after expression");
@@ -792,6 +832,23 @@ impl Parser<'_> {
                     span: token.span,
                 }
             }
+        }
+    }
+
+    fn parse_array_literal(&mut self, start_span: Span) -> Expr {
+        let mut elements = Vec::new();
+        while !self.at(TokenKindName::RBracket) && !self.at(TokenKindName::Eof) {
+            elements.push(self.parse_expr());
+            if !self.eat(TokenKindName::Comma) {
+                break;
+            }
+        }
+        let end = self
+            .expect(TokenKindName::RBracket, "expected `]` after array literal")
+            .end;
+        Expr::ArrayLiteral {
+            elements,
+            span: Span::new(start_span.start, end),
         }
     }
 
@@ -930,6 +987,12 @@ impl Parser<'_> {
                 self.expect(TokenKindName::Gt, "expected `>` after `Result<T, E>`");
                 Type::Result(Box::new(ok), Box::new(err))
             }
+            "Array" => {
+                self.expect(TokenKindName::Lt, "expected `<` after `Array`");
+                let inner = self.parse_type();
+                self.expect(TokenKindName::Gt, "expected `>` after `Array<T>`");
+                Type::Array(Box::new(inner))
+            }
             _ => {
                 if name == "undefined" || name == "null" || name == "any" {
                     self.error(
@@ -994,6 +1057,12 @@ impl Parser<'_> {
         &self.peek().kind
     }
 
+    fn peek_next_is(&self, expected: TokenKindName) -> bool {
+        self.tokens
+            .get(self.pos + 1)
+            .is_some_and(|token| expected.matches(&token.kind))
+    }
+
     fn advance(&mut self) -> Token {
         let token = self.tokens[self.pos].clone();
         if !matches!(token.kind, TokenKind::Eof) {
@@ -1029,6 +1098,7 @@ impl Parser<'_> {
 fn stmt_span(stmt: &Stmt) -> Span {
     match stmt {
         Stmt::Var { span, .. }
+        | Stmt::Assign { span, .. }
         | Stmt::Return { span, .. }
         | Stmt::If { span, .. }
         | Stmt::Expr { span, .. } => *span,
@@ -1077,6 +1147,8 @@ enum TokenKindName {
     Minus,
     Star,
     Slash,
+    AmpAmp,
+    PipePipe,
     EqEqEq,
     BangEqEq,
     Bang,
@@ -1118,6 +1190,8 @@ impl TokenKindName {
                 | (TokenKindName::Minus, TokenKind::Minus)
                 | (TokenKindName::Star, TokenKind::Star)
                 | (TokenKindName::Slash, TokenKind::Slash)
+                | (TokenKindName::AmpAmp, TokenKind::AmpAmp)
+                | (TokenKindName::PipePipe, TokenKind::PipePipe)
                 | (TokenKindName::EqEqEq, TokenKind::EqEqEq)
                 | (TokenKindName::BangEqEq, TokenKind::BangEqEq)
                 | (TokenKindName::Bang, TokenKind::Bang)

@@ -165,6 +165,9 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
                 format_expr(expr)
             ));
         }
+        Stmt::Assign { name, expr, .. } => {
+            out.push_str(&format!("{pad}{name} = {}\n", format_expr(expr)));
+        }
         Stmt::Return { expr, .. } => {
             out.push_str(&format!("{pad}return {}\n", format_expr(expr)));
         }
@@ -231,6 +234,14 @@ fn format_expr(expr: &Expr) -> String {
                 .join(", ");
             format!("{{ {body} }}")
         }
+        Expr::ArrayLiteral { elements, .. } => {
+            let body = elements
+                .iter()
+                .map(format_expr)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{body}]")
+        }
         Expr::StructLiteral { name, fields, .. } => {
             let mut out = format!("{name} {{ ");
             out.push_str(
@@ -282,6 +293,8 @@ fn format_op(op: BinaryOp) -> &'static str {
         BinaryOp::Gt => ">",
         BinaryOp::LtEq => "<=",
         BinaryOp::GtEq => ">=",
+        BinaryOp::And => "&&",
+        BinaryOp::Or => "||",
     }
 }
 
@@ -289,6 +302,7 @@ fn format_type(ty: &Type) -> String {
     match ty {
         Type::Option(inner) => format!("Option<{}>", format_type(inner)),
         Type::Result(ok, err) => format!("Result<{}, {}>", format_type(ok), format_type(err)),
+        Type::Array(inner) => format!("Array<{}>", format_type(inner)),
         other => other.to_string(),
     }
 }

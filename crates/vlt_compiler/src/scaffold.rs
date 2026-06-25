@@ -109,6 +109,10 @@ const AGENTS: &str = r#"# Agent Instructions
 - Do not use null, undefined, exceptions, classes, or inheritance.
 - Use Result<T, E> for fallible operations.
 - Use Option<T> for absence; prefer `return none`.
+- Use `let` for mutable local variables.
+- Use assignment only on `let` bindings; `const` bindings are immutable.
+- Use `&&` and `||` only with bool operands.
+- Use `Array<T>` for arrays; empty arrays require contextual type, for example `const ids: Array<u64> = []`.
 - Use domain `error` declarations for typed errors.
 - Keep route input/output types explicit.
 - Prefer native `route method "path"` declarations over `app.get(...)`.
@@ -127,6 +131,8 @@ Use `.ai/project.md`, `.ai/symbols.json`, and `.ai/routes.json` before reading s
 - Prefer native `route method "path"` declarations.
 - Treat route declarations as HTTP contracts and put business logic in handler functions.
 - Use handler argument order: params, query, body, ctx.
+- Use `let` for mutable local variables and assign only to `let` bindings.
+- Use `Array<T>` and `[a, b, c]` for arrays; annotate empty arrays.
 - Keep inline route bodies tiny and inside the supported Axum lowering subset.
 - Run `vlt build` after route changes.
 "#;
@@ -285,6 +291,14 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 - Prefer returning the plain value from Option<T> functions; the compiler wraps it.
 - Use `if (value)` and `if (!value)` to narrow Option<T>.
 - Do not use truthiness for strings, numbers, or objects; use explicit comparisons.
+- Use `let` for mutable local variables.
+- Use assignment only on `let` bindings.
+- `const` bindings are immutable.
+- Use `&&` and `||` only with bool operands.
+- Volt does not use JavaScript truthiness.
+- Use `Array<T>` for arrays.
+- Array literals use `[a, b, c]`.
+- Empty arrays require contextual type, e.g. `const ids: Array<u64> = []`.
 - Use domain `error` declarations for typed errors.
 - Prefer typed route errors with `errors DomainError { Variant 404 }`.
 - Use request ctx.arena for request-scoped allocations.
@@ -295,7 +309,7 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 - Generated route input type names are stable, for example `GetUsersIdParams`, `PatchUsersIdParams`, and `GetUsersQuery`.
 - `Ok(value)` becomes the route success status plus JSON; `Err(error)` maps through typed route errors to an HTTP status plus JSON.
 - Keep inline route bodies tiny and inside the supported Axum lowering subset: const bindings and `return ok(...)` over literals, field access, calls, and struct literals.
-- Current limits: no DB integration, middleware/auth, OpenAPI, public match, production-ready HTTP framework, or JavaScript truthiness.
+- Current limits: no for-in loops, while loops, switch, DB integration, middleware/auth, OpenAPI, public match, production-ready HTTP framework, or JavaScript truthiness.
 - Run `vlt build` after route changes.
 - Run `vlt ai index` after changing source structure.
 "#;

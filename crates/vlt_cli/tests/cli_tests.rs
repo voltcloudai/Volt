@@ -149,6 +149,69 @@ fn generated_api_builds_axum_project_and_serves_health() {
 }
 
 #[test]
+fn generated_api_builds_with_phase_4_1_features() {
+    let dir = tempdir().unwrap();
+    assert!(run(&["new", "api", "my-api"], dir.path()).status.success());
+    let root = dir.path().join("my-api");
+    std::fs::write(
+        root.join("src/users/users.phase41.vlt"),
+        r#"import { User } from "./users.types"
+
+function canUpdate(isAdmin: bool, isOwner: bool): bool {
+  return isAdmin || isOwner
+}
+
+function countAttempts(): i32 {
+  let attempts = 0
+  attempts = attempts + 1
+  return attempts
+}
+
+function defaultIds(): Array<u64> {
+  return [1, 2, 3]
+}
+
+function emptyIds(): Array<u64> {
+  const ids: Array<u64> = []
+  return ids
+}
+
+function demoUsers(): Array<User> {
+  return [User({ id: 1, email: "demo@test.com", name: "Demo User" })]
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run(&["build"], &root);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let generated = std::fs::read_to_string(root.join("target/volt/rust-project/src/main.rs"))
+        .expect("generated Rust should exist");
+    assert!(generated.contains("let mut attempts = 0;"));
+    assert!(generated.contains("attempts = attempts + 1;"));
+    assert!(generated.contains("return isAdmin || isOwner;"));
+    assert!(generated.contains("fn defaultIds() -> Vec<u64>"));
+    assert!(generated.contains("return vec![1, 2, 3];"));
+    assert!(generated.contains("let ids: Vec<u64> = vec![];"));
+
+    let cargo_check = Command::new("cargo")
+        .arg("check")
+        .current_dir(root.join("target/volt/rust-project"))
+        .output()
+        .expect("cargo check should run");
+    assert!(
+        cargo_check.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&cargo_check.stderr)
+    );
+}
+
+#[test]
 fn unsupported_route_body_fails_before_rust_is_generated() {
     let dir = tempdir().unwrap();
     assert!(run(&["new", "api", "my-api"], dir.path()).status.success());
@@ -725,6 +788,9 @@ fn ai_prompt_generates_useful_generic_prompt() {
     assert!(stdout.contains("vlt build"));
     assert!(stdout.contains("Use Result<T, E> for fallible operations."));
     assert!(stdout.contains("Use Option<T> for absence"));
+    assert!(stdout.contains("Use `let` for mutable local variables."));
+    assert!(stdout.contains("Use `Array<T>` for arrays."));
+    assert!(stdout.contains("Empty arrays require contextual type"));
     assert!(stdout.contains("errors UserError {"));
     assert!(stdout.contains("EmailAlreadyExists 409"));
     assert!(stdout.contains("Prefer native routes over `app.get(...)` or `app.patch(...)` calls."));

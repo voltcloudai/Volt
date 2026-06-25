@@ -58,6 +58,8 @@ AI indexing and HTTP codegen are related but separate:
 
 Agents should treat route declarations as HTTP contracts and put business logic in handler functions. Inline route bodies should stay inside the current lowering subset: simple `const` bindings, `return ok(...)`, literals, field access, simple calls, and struct literals.
 
+Prompted agents should also know the current Phase 4.1 core: use `let` for mutable locals, assign only to `let` bindings, keep `const` immutable, use `&&` and `||` only with bool operands, use `Array<T>` and `[a, b, c]` for arrays, and annotate empty arrays such as `const ids: Array<u64> = []`.
+
 ## Provider Interface
 
 ```rust
@@ -97,4 +99,5 @@ The default AI context should be compact and inspectable. Provider-backed planni
 - Route extraction uses native `route` declarations as primary metadata, with comments and simple `app.get/post/put/patch/delete(...)` calls as fallback.
 - Native route codegen supports a minimal Axum vertical slice, not middleware, auth, database integration, or OpenAPI.
 - Route handler lowering is v0.1-level and inline route body lowering is intentionally limited to the supported subset.
+- No for-in loops, while loops, switch, array methods, field assignment, or compound assignment yet.
 - Call graph data is not complete yet.

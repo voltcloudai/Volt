@@ -128,6 +128,11 @@ pub enum Stmt {
         expr: Expr,
         span: Span,
     },
+    Assign {
+        name: String,
+        expr: Expr,
+        span: Span,
+    },
     Return {
         expr: Expr,
         span: Span,
@@ -185,6 +190,10 @@ pub enum Expr {
         fields: Vec<ObjectField>,
         span: Span,
     },
+    ArrayLiteral {
+        elements: Vec<Expr>,
+        span: Span,
+    },
     StructLiteral {
         name: String,
         fields: Vec<FieldValue>,
@@ -220,6 +229,7 @@ impl Expr {
             | Expr::Call { span, .. }
             | Expr::Try { span, .. }
             | Expr::ObjectLiteral { span, .. }
+            | Expr::ArrayLiteral { span, .. }
             | Expr::StructLiteral { span, .. }
             | Expr::FieldAccess { span, .. }
             | Expr::Unary { span, .. }
@@ -260,6 +270,8 @@ pub enum BinaryOp {
     Gt,
     LtEq,
     GtEq,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

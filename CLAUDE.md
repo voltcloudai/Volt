@@ -5,6 +5,9 @@
 - Use `{id}` path params, not Express-style `:id` params.
 - Use `Option<T>` and `none` for absence; do not use `null` or `undefined`.
 - Use `if (value)` and `if (!value)` to narrow `Option<T>`.
+- Use `let` for mutable local variables and assign only to `let` bindings.
+- Use `&&` and `||` only with bool operands; do not use JavaScript truthiness.
+- Use `Array<T>` and `[a, b, c]` for arrays; empty arrays need contextual type.
 - Use `error` declarations for domain errors and typed route errors like `errors UserError { UserNotFound 404 }`.
 - Treat route declarations as HTTP contracts and put business logic in handler functions.
 - Use handler argument order: params, query, body, ctx.

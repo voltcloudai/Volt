@@ -19,8 +19,11 @@ Variables:
 ```ts
 const name = "Carlos"
 let count = 1
+count = count + 1
 const age: i32 = 42
 ```
+
+`const` bindings are immutable. `let` creates a mutable local variable and assignment is currently statement-only with identifier targets.
 
 Types and object literals:
 
@@ -46,7 +49,32 @@ if (value === 0) {
 }
 ```
 
-Statements do not require semicolons. Equality is `===` and `!==`; `==` is not part of the language.
+Boolean operators:
+
+```ts
+function canUpdate(isAdmin: bool, isOwner: bool): bool {
+  return isAdmin || isOwner
+}
+
+function isValid(email: string, name: string): bool {
+  return email !== "" && name !== ""
+}
+```
+
+Arrays:
+
+```ts
+function defaultIds(): Array<u64> {
+  return [1, 2, 3]
+}
+
+function emptyIds(): Array<u64> {
+  const ids: Array<u64> = []
+  return ids
+}
+```
+
+Statements do not require semicolons. Equality is `===` and `!==`; `==` is not part of the language. `&&` and `||` require bool operands and do not use JavaScript truthiness.
 
 ## Native HTTP Routes
 
@@ -137,10 +165,11 @@ Current limitations: no database integration, middleware/auth, OpenAPI generatio
 - `void`
 - `Option<T>`
 - `Result<T, E>`
+- `Array<T>`
 - User-declared object types with `type Name = { field: Type }`
 - Domain error declarations with `error Name { Variant { field: Type } }`
 
-`string` maps to Rust `String`. `Option<T>` maps to Rust `Option<T>`. `Result<T, E>` maps to Rust `Result<T, E>`.
+`string` maps to Rust `String`. `Option<T>` maps to Rust `Option<T>`. `Result<T, E>` maps to Rust `Result<T, E>`. `Array<T>` maps to Rust `Vec<T>`.
 
 ## Expressions
 
@@ -151,15 +180,18 @@ Supported expressions:
 - String literals
 - Boolean literals
 - Variable references
-- Binary expressions with `+`, `-`, `*`, `/`, `===`, `!==`, `<`, `>`, `<=`, `>=`
+- Binary expressions with `+`, `-`, `*`, `/`, `===`, `!==`, `<`, `>`, `<=`, `>=`, `&&`, `||`
 - Function calls
 - Call-style struct construction with `User({ id: 1 })`
 - Call-style error construction with `UserError.UserNotFound({ message: "..." })`
 - `try` on `Result<T, E>` values in route-oriented code
 - `none` in `Option<T>` contexts
 - Object literals
+- Array literals
 - Anonymous object literals and spread fields for compact route inputs
 - Field access
+
+Array literals are homogeneous. Empty array literals require contextual typing, for example `const ids: Array<u64> = []` or `return []` from a function returning `Array<u64>`.
 
 ## Error Model
 
@@ -193,6 +225,13 @@ print(value): void
 ```
 
 `switch` is reserved for normal TypeScript-like value control flow. Option handling is done with `if (value)` and `if (!value)` narrowing, not public `match` or `switch (option.kind)` patterns.
+
+## Current Limitations
+
+- No for-in loops, while loops, or switch yet.
+- No array methods or `.push` yet.
+- No field assignment, compound assignment, or increment/decrement yet.
+- No JavaScript truthiness.
 
 ## Memory Model
 

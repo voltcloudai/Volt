@@ -203,13 +203,53 @@ function emptyIds(): Array<u64> {
 
 `const` bindings are immutable. `&&` and `||` require bool operands; Volt still does not use JavaScript truthiness. `Array<T>` lowers to Rust `Vec<T>`, and array literals lower to `vec![...]`.
 
+## Phase 4.2 Control Flow
+
+Volt supports TypeScript-like `while`, `for-in` over `Array<T>`, `break`, `continue`, and ordinary value `switch`.
+
+```ts
+function countAdmins(users: Array<User>): i32 {
+  let count = 0
+
+  for user in users {
+    switch (user.role) {
+      case "admin": {
+        count = count + 1
+      }
+
+      default: {
+        continue
+      }
+    }
+  }
+
+  return count
+}
+
+function waitUntilReady(maxAttempts: i32): i32 {
+  let attempts = 0
+
+  while (attempts < maxAttempts) {
+    attempts = attempts + 1
+
+    if (attempts === 3) {
+      break
+    }
+  }
+
+  return attempts
+}
+```
+
+Use `while (condition) { ... }` for condition-based loops. Use `for item in array { ... }` to iterate over `Array<T>`. `for-in` currently consumes the array in generated Rust. `break` and `continue` are valid only inside loops. `switch` is normal TypeScript-like value branching, not pattern matching, and has no fallthrough. Do not use `switch` for `Option<T>`; use `if (value)` / `if (!value)`.
+
 ## Current Limitations
 
 - The HTTP runtime and route handler lowering are a v0.1-level Axum vertical slice, not a full framework or production-ready runtime.
 - No middleware, authentication, database integration, OpenAPI generation, package manager, or LLVM backend yet.
 - No classes, inheritance, decorators, macros, exceptions, `null`, `undefined`, or `any`.
 - Generic support is limited to recognizing `Option<T>`, `Result<T, E>`, and `Array<T>`.
-- No for-in loops, while loops, switch, array methods, `.push`, field assignment, compound assignment, or increment/decrement yet.
+- No array methods, `.push`, array indexing, field assignment, compound assignment, or increment/decrement yet.
 - The formatter is intentionally simple and prints canonical source to stdout.
 - Rust code generation is direct and readable, not optimized.
 - `vlt plan` is offline and deterministic. It does not call an LLM provider yet.
@@ -222,7 +262,7 @@ function emptyIds(): Array<u64> {
 
 1. Improve diagnostics and add recovery for more parser errors.
 2. Expand API project support around routes, services, repositories, and tests.
-3. Add Phase 4.2 control flow: for-in loops, while loops, and normal TypeScript-like switch.
+3. Add Phase 4.3 array/object ergonomics: indexing, `.length`, `.push`, field assignment, compound assignment, and increment/decrement.
 4. Add richer formatter behavior and snapshot tests.
 5. Add backend-focused standard library pieces.
 6. Explore provider-backed `vlt plan --ai` using compact `.ai/` context.

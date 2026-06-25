@@ -8,6 +8,11 @@
 - Use `let` for mutable local variables and assign only to `let` bindings.
 - Use `&&` and `||` only with bool operands; do not use JavaScript truthiness.
 - Use `Array<T>` and `[a, b, c]` for arrays; empty arrays need contextual type.
+- Use `while (condition) { ... }` for condition-based loops.
+- Use `for item in array { ... }` to iterate over `Array<T>`.
+- Use `break` and `continue` only inside loops.
+- Use normal TypeScript-like `switch` for ordinary value branching; it is not pattern matching and has no fallthrough.
+- Do not use `switch` for `Option<T>`; use `if (value)` / `if (!value)`.
 - Use `error` declarations for domain errors and typed route errors like `errors UserError { UserNotFound 404 }`.
 - Treat route declarations as HTTP contracts and put business logic in handler functions.
 - Use handler argument order: params, query, body, ctx.

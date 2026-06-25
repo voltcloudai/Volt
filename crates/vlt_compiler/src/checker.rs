@@ -320,7 +320,7 @@ impl<'a> Checker<'a> {
         let previous_route_scope = self.route_scope;
         self.route_scope = true;
         for stmt in &route.statements {
-            self.check_stmt(stmt, &return_type, &mut env);
+            self.check_stmt(stmt, &return_type, &mut env, 0);
         }
         self.route_scope = previous_route_scope;
     }
@@ -597,11 +597,17 @@ impl<'a> Checker<'a> {
         }
 
         for stmt in &function.body {
-            self.check_stmt(stmt, &function.return_type, &mut env);
+            self.check_stmt(stmt, &function.return_type, &mut env, 0);
         }
     }
 
-    fn check_stmt(&mut self, stmt: &Stmt, return_type: &Type, env: &mut LocalEnv) {
+    fn check_stmt(
+        &mut self,
+        stmt: &Stmt,
+        return_type: &Type,
+        env: &mut LocalEnv,
+        loop_depth: usize,
+    ) {
         match stmt {
             Stmt::Var {
                 mutable,
@@ -689,17 +695,102 @@ impl<'a> Checker<'a> {
                     narrow_local(&mut then_env, name, narrowed.clone());
                 }
                 for stmt in then_body {
-                    self.check_stmt(stmt, return_type, &mut then_env);
+                    self.check_stmt(stmt, return_type, &mut then_env, loop_depth);
                 }
                 let mut else_env = env.clone();
                 for stmt in else_body {
-                    self.check_stmt(stmt, return_type, &mut else_env);
+                    self.check_stmt(stmt, return_type, &mut else_env, loop_depth);
                 }
 
                 if else_body.is_empty() && always_returns(then_body) {
                     if let Some((name, narrowed)) = condition_info.negative_guard_narrow {
                         narrow_local(env, &name, narrowed);
                     }
+                }
+            }
+            Stmt::While {
+                condition, body, ..
+            } => {
+                self.check_condition(condition, env);
+                let mut body_env = env.clone();
+                for stmt in body {
+                    self.check_stmt(stmt, return_type, &mut body_env, loop_depth + 1);
+                }
+            }
+            Stmt::ForIn {
+                item,
+                iterable,
+                body,
+                ..
+            } => {
+                let iterable_ty = self.check_expr(iterable, env, None);
+                let item_ty = match iterable_ty {
+                    Type::Array(inner) => *inner,
+                    Type::Unknown => Type::Unknown,
+                    other => {
+                        self.error(
+                            "E152",
+                            format!("for-in requires Array<T>, found `{other}`"),
+                            iterable.span(),
+                            "iterate over an `Array<T>` value",
+                        );
+                        Type::Unknown
+                    }
+                };
+
+                let mut body_env = env.clone();
+                body_env.insert(item.clone(), LocalBinding::immutable(item_ty));
+                for stmt in body {
+                    self.check_stmt(stmt, return_type, &mut body_env, loop_depth + 1);
+                }
+            }
+            Stmt::Break { span } => {
+                if loop_depth == 0 {
+                    self.error(
+                        "E150",
+                        "`break` can only be used inside a loop",
+                        *span,
+                        "move `break` into a `while` or `for-in` loop",
+                    );
+                }
+            }
+            Stmt::Continue { span } => {
+                if loop_depth == 0 {
+                    self.error(
+                        "E151",
+                        "`continue` can only be used inside a loop",
+                        *span,
+                        "move `continue` into a `while` or `for-in` loop",
+                    );
+                }
+            }
+            Stmt::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                let switch_ty = self.check_expr(expr, env, None);
+                for case in cases {
+                    let case_ty = self.check_expr(&case.value, env, Some(&switch_ty));
+                    if !switch_ty.is_assignable_from(&case_ty)
+                        && !case_ty.is_assignable_from(&switch_ty)
+                    {
+                        self.error(
+                            "E154",
+                            format!("switch case type mismatch: cannot compare `{switch_ty}` with `{case_ty}`"),
+                            case.value.span(),
+                            "use case values with the same type as the switch expression",
+                        );
+                    }
+                    let mut case_env = env.clone();
+                    for stmt in &case.body {
+                        self.check_stmt(stmt, return_type, &mut case_env, loop_depth);
+                    }
+                }
+                let mut default_env = env.clone();
+                for stmt in default {
+                    self.check_stmt(stmt, return_type, &mut default_env, loop_depth);
                 }
             }
             Stmt::Expr { expr, .. } => {
@@ -1417,6 +1508,12 @@ fn always_returns(statements: &[Stmt]) -> bool {
             else_body,
             ..
         } if !else_body.is_empty() => always_returns(then_body) && always_returns(else_body),
+        Stmt::While {
+            condition, body, ..
+        } if matches!(condition, Expr::Bool { value: true, .. }) => always_returns(body),
+        Stmt::Switch { cases, default, .. } if !default.is_empty() => {
+            cases.iter().all(|case| always_returns(&case.body)) && always_returns(default)
+        }
         _ => false,
     })
 }

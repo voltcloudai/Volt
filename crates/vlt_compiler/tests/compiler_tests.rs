@@ -422,6 +422,309 @@ function demo(isAdmin: bool, isOwner: bool): Array<u64> {
 }
 
 #[test]
+fn parses_phase_4_2_control_flow() {
+    let program = parse(
+        r#"
+function demo(values: Array<i32>): i32 {
+  let total = 0
+  while (total < 3) {
+    total = total + 1
+  }
+  for value in values {
+    switch (value) {
+      case 1: {
+        continue
+      }
+      default: {
+        break
+      }
+    }
+  }
+  return total
+}
+"#,
+    );
+
+    let Decl::Function(function) = &program.declarations[0] else {
+        panic!("expected function");
+    };
+    assert!(matches!(&function.body[1], Stmt::While { .. }));
+    assert!(matches!(&function.body[2], Stmt::ForIn { .. }));
+}
+
+#[test]
+fn while_conditions_follow_if_rules() {
+    for text in [
+        r#"function bad(): i32 { while ("yes") { break } return 0 }"#,
+        r#"function bad(): i32 { while (1) { break } return 0 }"#,
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(diagnostics
+            .all()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "E125"));
+    }
+}
+
+#[test]
+fn while_assignment_break_continue_check_and_codegen() {
+    let source = source(
+        r#"
+function countToThree(): i32 {
+  let count = 0
+  while (count < 3) {
+    count = count + 1
+    if (count === 2) {
+      continue
+    }
+    if (count === 3) {
+      break
+    }
+  }
+  return count
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+    let rust = generate_rust(&program);
+    assert!(rust.contains("while count < 3 {"));
+    assert!(rust.contains("count = count + 1;"));
+    assert!(rust.contains("continue;"));
+    assert!(rust.contains("break;"));
+}
+
+#[test]
+fn break_and_continue_outside_loops_fail() {
+    for (text, code) in [
+        (r#"function bad(): void { break }"#, "E150"),
+        (r#"function bad(): void { continue }"#, "E151"),
+        (
+            r#"function bad(status: string): void { switch (status) { case "x": { break } } }"#,
+            "E150",
+        ),
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(
+            diagnostics
+                .all()
+                .iter()
+                .any(|diagnostic| diagnostic.code == code),
+            "expected diagnostic {code}"
+        );
+    }
+}
+
+#[test]
+fn for_in_checks_item_scope_and_codegen() {
+    let valid_source = source(
+        r#"
+type User = {
+  id: u64
+  email: string
+}
+
+function firstEmail(users: Array<User>): string {
+  let result = ""
+  for user in users {
+    result = user.email
+    break
+  }
+  return result
+}
+"#,
+    );
+    let program = parse_source(&valid_source).unwrap();
+    check_without_entrypoint(&program, &valid_source).expect("program should check");
+    let rust = generate_rust(&program);
+    assert!(rust.contains("for user in users {"));
+    assert!(rust.contains("result = user.email;"));
+    assert!(rust.contains("break;"));
+
+    for (text, code) in [
+        (
+            r#"function bad(value: i32): void { for item in value { print(item) } }"#,
+            "E152",
+        ),
+        (
+            r#"function bad(values: Array<i32>): i32 { for value in values { value = 2 } return 0 }"#,
+            "E131",
+        ),
+        (
+            r#"function bad(values: Array<i32>): i32 { for value in values { print(value) } return value }"#,
+            "E106",
+        ),
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(
+            diagnostics
+                .all()
+                .iter()
+                .any(|diagnostic| diagnostic.code == code),
+            "expected diagnostic {code}"
+        );
+    }
+}
+
+#[test]
+fn switch_checks_cases_scope_and_codegen() {
+    let valid_source = source(
+        r#"
+function statusLabel(status: string): string {
+  switch (status) {
+    case "draft": {
+      return "Draft"
+    }
+    case "published": {
+      return "Published"
+    }
+    default: {
+      return "Unknown"
+    }
+  }
+}
+
+function statusCode(code: i32): string {
+  switch (code) {
+    case 200: {
+      return "OK"
+    }
+    case 404: {
+      return "Not Found"
+    }
+  }
+  return "Unknown"
+}
+"#,
+    );
+    let program = parse_source(&valid_source).unwrap();
+    check_without_entrypoint(&program, &valid_source).expect("program should check");
+    let rust = generate_rust(&program);
+    assert!(rust.contains("if status == \"draft\".to_string() {"));
+    assert!(rust.contains("else if status == \"published\".to_string() {"));
+    assert!(rust.contains("else {"));
+    assert!(rust.contains("if code == 200 {"));
+
+    for (text, code) in [
+        (
+            r#"function bad(status: string): string { switch (status) { case 1: { return "x" } } return "y" }"#,
+            "E154",
+        ),
+        (
+            r#"function bad(status: string): string { switch (status) { case "x": { const label = "x" } } return label }"#,
+            "E106",
+        ),
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(
+            diagnostics
+                .all()
+                .iter()
+                .any(|diagnostic| diagnostic.code == code),
+            "expected diagnostic {code}"
+        );
+    }
+}
+
+#[test]
+fn formatter_handles_phase_4_2_control_flow() {
+    let program = parse(
+        r#"
+function demo(status: string, values: Array<i32>): void {
+  while (true) {
+    break
+  }
+  for value in values {
+    continue
+  }
+  switch (status) {
+    case "draft": {
+      print("draft")
+    }
+    default: {
+      print("unknown")
+    }
+  }
+}
+"#,
+    );
+    let formatted = format_program(&program);
+    assert!(formatted.contains("while (true) {"));
+    assert!(formatted.contains("for value in values {"));
+    assert!(formatted.contains("break"));
+    assert!(formatted.contains("continue"));
+    assert!(formatted.contains("switch (status) {"));
+    assert!(formatted.contains("case \"draft\": {"));
+    assert!(formatted.contains("default: {"));
+}
+
+#[test]
+fn phase_4_2_acceptance_program_generates_and_runs() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("phase42.vlt");
+    std::fs::write(
+        &file,
+        r#"
+type User = {
+  id: u64
+  email: string
+  role: string
+}
+
+function countAdmins(users: Array<User>): i32 {
+  let count = 0
+  for user in users {
+    switch (user.role) {
+      case "admin": {
+        count = count + 1
+      }
+      default: {
+        continue
+      }
+    }
+  }
+  return count
+}
+
+function waitUntilReady(maxAttempts: i32): i32 {
+  let attempts = 0
+  while (attempts < maxAttempts) {
+    attempts = attempts + 1
+    if (attempts === 3) {
+      break
+    }
+  }
+  return attempts
+}
+
+function main(): void {
+  const users = [
+    User({ id: 1, email: "a@test.com", role: "admin" }),
+    User({ id: 2, email: "b@test.com", role: "member" }),
+  ]
+  print(countAdmins(users) + waitUntilReady(10))
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run_file(&file, dir.path()).unwrap();
+    assert_eq!(output.trim(), "4");
+}
+
+#[test]
 fn runs_hello_example() {
     let dir = tempdir().unwrap();
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

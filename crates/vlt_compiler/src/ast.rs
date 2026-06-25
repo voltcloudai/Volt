@@ -143,10 +143,40 @@ pub enum Stmt {
         else_body: Vec<Stmt>,
         span: Span,
     },
+    While {
+        condition: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    ForIn {
+        item: String,
+        iterable: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    Break {
+        span: Span,
+    },
+    Continue {
+        span: Span,
+    },
+    Switch {
+        expr: Expr,
+        cases: Vec<SwitchCase>,
+        default: Vec<Stmt>,
+        span: Span,
+    },
     Expr {
         expr: Expr,
         span: Span,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwitchCase {
+    pub value: Expr,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

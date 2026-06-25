@@ -212,6 +212,75 @@ function demoUsers(): Array<User> {
 }
 
 #[test]
+fn generated_api_builds_with_phase_4_2_control_flow() {
+    let dir = tempdir().unwrap();
+    assert!(run(&["new", "api", "my-api"], dir.path()).status.success());
+    let root = dir.path().join("my-api");
+    std::fs::write(
+        root.join("src/users/users.phase42.vlt"),
+        r#"type RoleUser = {
+  id: u64
+  email: string
+  role: string
+}
+
+function countAdmins(users: Array<RoleUser>): i32 {
+  let count = 0
+  for user in users {
+    switch (user.role) {
+      case "admin": {
+        count = count + 1
+      }
+      default: {
+        continue
+      }
+    }
+  }
+  return count
+}
+
+function waitUntilReady(maxAttempts: i32): i32 {
+  let attempts = 0
+  while (attempts < maxAttempts) {
+    attempts = attempts + 1
+    if (attempts === 3) {
+      break
+    }
+  }
+  return attempts
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run(&["build"], &root);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let generated = std::fs::read_to_string(root.join("target/volt/rust-project/src/main.rs"))
+        .expect("generated Rust should exist");
+    assert!(generated.contains("for user in users {"));
+    assert!(generated.contains("if user.role == \"admin\".to_string() {"));
+    assert!(generated.contains("continue;"));
+    assert!(generated.contains("while attempts < maxAttempts {"));
+    assert!(generated.contains("break;"));
+
+    let cargo_check = Command::new("cargo")
+        .arg("check")
+        .current_dir(root.join("target/volt/rust-project"))
+        .output()
+        .expect("cargo check should run");
+    assert!(
+        cargo_check.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&cargo_check.stderr)
+    );
+}
+
+#[test]
 fn unsupported_route_body_fails_before_rust_is_generated() {
     let dir = tempdir().unwrap();
     assert!(run(&["new", "api", "my-api"], dir.path()).status.success());
@@ -791,6 +860,10 @@ fn ai_prompt_generates_useful_generic_prompt() {
     assert!(stdout.contains("Use `let` for mutable local variables."));
     assert!(stdout.contains("Use `Array<T>` for arrays."));
     assert!(stdout.contains("Empty arrays require contextual type"));
+    assert!(stdout.contains("Use `while (condition) { ... }`"));
+    assert!(stdout.contains("Use `for item in array { ... }`"));
+    assert!(stdout.contains("Use normal TypeScript-like `switch`"));
+    assert!(stdout.contains("No fallthrough in switch."));
     assert!(stdout.contains("errors UserError {"));
     assert!(stdout.contains("EmailAlreadyExists 409"));
     assert!(stdout.contains("Prefer native routes over `app.get(...)` or `app.patch(...)` calls."));

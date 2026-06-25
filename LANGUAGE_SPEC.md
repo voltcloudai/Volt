@@ -193,6 +193,38 @@ Supported expressions:
 
 Array literals are homogeneous. Empty array literals require contextual typing, for example `const ids: Array<u64> = []` or `return []` from a function returning `Array<u64>`.
 
+## Statements
+
+Supported statements include declarations, assignment, return, `if`, `while`, `for-in`, `break`, `continue`, expression statements, and normal TypeScript-like `switch`.
+
+```ts
+while (condition) {
+  // ...
+}
+
+for item in array {
+  // item has the Array<T> element type
+}
+
+switch (status) {
+  case "draft": {
+    return "Draft"
+  }
+
+  default: {
+    return "Unknown"
+  }
+}
+```
+
+`while` conditions follow the same rules as `if`: use bool expressions, or `Option<T>` where Option narrowing is supported. Strings, numbers, and objects are not truthy.
+
+`for-in` currently works over `Array<T>`. The loop variable is scoped to the loop body and is immutable. Generated Rust currently uses direct iteration, so the array is consumed by the loop.
+
+Use `break` and `continue` only inside loops.
+
+`switch` compares ordinary values. It is not pattern matching, it has no fallthrough, and it is not an Option handling strategy. Use `if (value)` / `if (!value)` for `Option<T>`.
+
 ## Error Model
 
 Volt v0.1 has no exceptions, `null`, or `undefined`. Absence should use `Option<T>`. Fallible operations should use `Result<T, E>` and domain `error` declarations.
@@ -228,8 +260,7 @@ print(value): void
 
 ## Current Limitations
 
-- No for-in loops, while loops, or switch yet.
-- No array methods or `.push` yet.
+- No array methods, `.push`, or array indexing yet.
 - No field assignment, compound assignment, or increment/decrement yet.
 - No JavaScript truthiness.
 

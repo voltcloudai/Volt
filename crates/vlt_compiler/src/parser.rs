@@ -10,6 +10,7 @@ pub fn parse_source(source: &SourceFile) -> Result<Program, DiagnosticBag> {
         tokens,
         pos: 0,
         diagnostics: DiagnosticBag::new(),
+        suppress_struct_literal: false,
     }
     .parse_program()
 }
@@ -19,6 +20,7 @@ struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
     diagnostics: DiagnosticBag,
+    suppress_struct_literal: bool,
 }
 
 impl Parser<'_> {
@@ -531,6 +533,11 @@ impl Parser<'_> {
             TokenKind::Let => self.parse_var(true),
             TokenKind::Return => self.parse_return(),
             TokenKind::If => self.parse_if(),
+            TokenKind::While => self.parse_while(),
+            TokenKind::For => self.parse_for_in(),
+            TokenKind::Break => self.parse_break(),
+            TokenKind::Continue => self.parse_continue(),
+            TokenKind::Switch => self.parse_switch(),
             TokenKind::Ident(_) if self.peek_next_is(TokenKindName::Equals) => self.parse_assign(),
             _ => {
                 let expr = self.parse_expr();
@@ -606,6 +613,123 @@ impl Parser<'_> {
             condition,
             then_body,
             else_body,
+            span: Span::new(start, end),
+        }
+    }
+
+    fn parse_while(&mut self) -> Stmt {
+        let start = self.expect(TokenKindName::While, "expected `while`").start;
+        self.expect(TokenKindName::LParen, "expected `(` after `while`");
+        let condition = self.parse_expr();
+        self.expect(TokenKindName::RParen, "expected `)` after condition");
+        let body = self.parse_block();
+        let end = body
+            .last()
+            .map(stmt_span)
+            .unwrap_or(condition.span())
+            .end
+            .max(self.previous_span().end);
+        Stmt::While {
+            condition,
+            body,
+            span: Span::new(start, end),
+        }
+    }
+
+    fn parse_for_in(&mut self) -> Stmt {
+        let start = self.expect(TokenKindName::For, "expected `for`").start;
+        let (item, item_span) = self.expect_ident("expected loop variable name");
+        self.expect(TokenKindName::In, "expected `in` after loop variable");
+        let previous_suppress_struct_literal = self.suppress_struct_literal;
+        self.suppress_struct_literal = true;
+        let iterable = self.parse_expr();
+        self.suppress_struct_literal = previous_suppress_struct_literal;
+        let body = self.parse_block();
+        let end = body
+            .last()
+            .map(stmt_span)
+            .unwrap_or(iterable.span())
+            .end
+            .max(self.previous_span().end);
+        Stmt::ForIn {
+            item,
+            iterable,
+            body,
+            span: Span::new(start, end.max(item_span.end)),
+        }
+    }
+
+    fn parse_break(&mut self) -> Stmt {
+        let span = self.expect(TokenKindName::Break, "expected `break`");
+        Stmt::Break { span }
+    }
+
+    fn parse_continue(&mut self) -> Stmt {
+        let span = self.expect(TokenKindName::Continue, "expected `continue`");
+        Stmt::Continue { span }
+    }
+
+    fn parse_switch(&mut self) -> Stmt {
+        let start = self
+            .expect(TokenKindName::Switch, "expected `switch`")
+            .start;
+        self.expect(TokenKindName::LParen, "expected `(` after `switch`");
+        let expr = self.parse_expr();
+        self.expect(
+            TokenKindName::RParen,
+            "expected `)` after switch expression",
+        );
+        self.expect(TokenKindName::LBrace, "expected `{` to start switch body");
+
+        let mut cases = Vec::new();
+        let mut default = Vec::new();
+        while !self.at(TokenKindName::RBrace) && !self.at(TokenKindName::Eof) {
+            if self.at(TokenKindName::Case) {
+                cases.push(self.parse_switch_case());
+            } else if self.at(TokenKindName::Default) {
+                let default_span = self.expect(TokenKindName::Default, "expected `default`");
+                self.expect(TokenKindName::Colon, "expected `:` after `default`");
+                default = self.parse_block();
+                if default.is_empty() {
+                    let _ = default_span;
+                }
+            } else {
+                let token = self.peek().clone();
+                self.error(
+                    "E016",
+                    "expected `case` or `default` in switch",
+                    token.span,
+                    "write `case value: { ... }` or `default: { ... }`",
+                );
+                self.advance();
+            }
+        }
+
+        let end = self
+            .expect(TokenKindName::RBrace, "expected `}` after switch body")
+            .end;
+        Stmt::Switch {
+            expr,
+            cases,
+            default,
+            span: Span::new(start, end),
+        }
+    }
+
+    fn parse_switch_case(&mut self) -> SwitchCase {
+        let start = self.expect(TokenKindName::Case, "expected `case`").start;
+        let value = self.parse_expr();
+        self.expect(TokenKindName::Colon, "expected `:` after case value");
+        let body = self.parse_block();
+        let end = body
+            .last()
+            .map(stmt_span)
+            .unwrap_or(value.span())
+            .end
+            .max(self.previous_span().end);
+        SwitchCase {
+            value,
+            body,
             span: Span::new(start, end),
         }
     }
@@ -798,7 +922,9 @@ impl Parser<'_> {
                 value: false,
                 span: token.span,
             },
-            TokenKind::Ident(name) if self.at(TokenKindName::LBrace) => {
+            TokenKind::Ident(name)
+                if self.at(TokenKindName::LBrace) && !self.suppress_struct_literal =>
+            {
                 self.parse_struct_literal(name, token.span)
             }
             TokenKind::Ident(name) => Expr::Var {
@@ -1101,6 +1227,11 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::Assign { span, .. }
         | Stmt::Return { span, .. }
         | Stmt::If { span, .. }
+        | Stmt::While { span, .. }
+        | Stmt::ForIn { span, .. }
+        | Stmt::Break { span }
+        | Stmt::Continue { span }
+        | Stmt::Switch { span, .. }
         | Stmt::Expr { span, .. } => *span,
     }
 }
@@ -1138,6 +1269,14 @@ enum TokenKindName {
     Route,
     If,
     Else,
+    While,
+    For,
+    In,
+    Break,
+    Continue,
+    Switch,
+    Case,
+    Default,
     Colon,
     Comma,
     Equals,
@@ -1181,6 +1320,14 @@ impl TokenKindName {
                 | (TokenKindName::Route, TokenKind::Route)
                 | (TokenKindName::If, TokenKind::If)
                 | (TokenKindName::Else, TokenKind::Else)
+                | (TokenKindName::While, TokenKind::While)
+                | (TokenKindName::For, TokenKind::For)
+                | (TokenKindName::In, TokenKind::In)
+                | (TokenKindName::Break, TokenKind::Break)
+                | (TokenKindName::Continue, TokenKind::Continue)
+                | (TokenKindName::Switch, TokenKind::Switch)
+                | (TokenKindName::Case, TokenKind::Case)
+                | (TokenKindName::Default, TokenKind::Default)
                 | (TokenKindName::Colon, TokenKind::Colon)
                 | (TokenKindName::Comma, TokenKind::Comma)
                 | (TokenKindName::Equals, TokenKind::Equals)

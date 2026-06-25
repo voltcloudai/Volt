@@ -191,6 +191,59 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
                 out.push_str(&format!("{pad}}}\n"));
             }
         }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            out.push_str(&format!("{pad}while ({}) {{\n", format_expr(condition)));
+            for stmt in body {
+                format_stmt(out, stmt, indent + 1);
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        Stmt::ForIn {
+            item,
+            iterable,
+            body,
+            ..
+        } => {
+            out.push_str(&format!(
+                "{pad}for {item} in {} {{\n",
+                format_expr(iterable)
+            ));
+            for stmt in body {
+                format_stmt(out, stmt, indent + 1);
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        Stmt::Break { .. } => {
+            out.push_str(&format!("{pad}break\n"));
+        }
+        Stmt::Continue { .. } => {
+            out.push_str(&format!("{pad}continue\n"));
+        }
+        Stmt::Switch {
+            expr,
+            cases,
+            default,
+            ..
+        } => {
+            out.push_str(&format!("{pad}switch ({}) {{\n", format_expr(expr)));
+            for case in cases {
+                out.push_str(&format!("{pad}  case {}: {{\n", format_expr(&case.value)));
+                for stmt in &case.body {
+                    format_stmt(out, stmt, indent + 2);
+                }
+                out.push_str(&format!("{pad}  }}\n"));
+            }
+            if !default.is_empty() {
+                out.push_str(&format!("{pad}  default: {{\n"));
+                for stmt in default {
+                    format_stmt(out, stmt, indent + 2);
+                }
+                out.push_str(&format!("{pad}  }}\n"));
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
         Stmt::Expr { expr, .. } => {
             out.push_str(&format!("{pad}{}\n", format_expr(expr)));
         }

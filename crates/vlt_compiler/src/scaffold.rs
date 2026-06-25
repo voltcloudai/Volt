@@ -113,6 +113,11 @@ const AGENTS: &str = r#"# Agent Instructions
 - Use assignment only on `let` bindings; `const` bindings are immutable.
 - Use `&&` and `||` only with bool operands.
 - Use `Array<T>` for arrays; empty arrays require contextual type, for example `const ids: Array<u64> = []`.
+- Use `while (condition) { ... }` for condition-based loops.
+- Use `for item in array { ... }` to iterate over `Array<T>`.
+- Use `break` and `continue` only inside loops.
+- Use normal TypeScript-like `switch` for ordinary value branching; it is not pattern matching and has no fallthrough.
+- Do not use `switch` for Option<T>; use `if (value)` / `if (!value)`.
 - Use domain `error` declarations for typed errors.
 - Keep route input/output types explicit.
 - Prefer native `route method "path"` declarations over `app.get(...)`.
@@ -133,6 +138,8 @@ Use `.ai/project.md`, `.ai/symbols.json`, and `.ai/routes.json` before reading s
 - Use handler argument order: params, query, body, ctx.
 - Use `let` for mutable local variables and assign only to `let` bindings.
 - Use `Array<T>` and `[a, b, c]` for arrays; annotate empty arrays.
+- Use `while (condition) { ... }`, `for item in array { ... }`, and normal TypeScript-like `switch` for value branching.
+- Use `break` and `continue` only inside loops; do not use `switch` for Option<T>`.
 - Keep inline route bodies tiny and inside the supported Axum lowering subset.
 - Run `vlt build` after route changes.
 "#;
@@ -299,6 +306,15 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 - Use `Array<T>` for arrays.
 - Array literals use `[a, b, c]`.
 - Empty arrays require contextual type, e.g. `const ids: Array<u64> = []`.
+- Use `while (condition) { ... }` for condition-based loops.
+- Use `for item in array { ... }` to iterate over `Array<T>`.
+- `for-in` currently works over `Array<T>`.
+- `for-in` currently consumes the array in generated Rust.
+- Use `break` and `continue` only inside loops.
+- Use normal TypeScript-like `switch` for ordinary value branching.
+- `switch` is not pattern matching.
+- Do not use `switch` for Option<T>; use `if (value)` / `if (!value)`.
+- No fallthrough in switch.
 - Use domain `error` declarations for typed errors.
 - Prefer typed route errors with `errors DomainError { Variant 404 }`.
 - Use request ctx.arena for request-scoped allocations.
@@ -309,7 +325,7 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 - Generated route input type names are stable, for example `GetUsersIdParams`, `PatchUsersIdParams`, and `GetUsersQuery`.
 - `Ok(value)` becomes the route success status plus JSON; `Err(error)` maps through typed route errors to an HTTP status plus JSON.
 - Keep inline route bodies tiny and inside the supported Axum lowering subset: const bindings and `return ok(...)` over literals, field access, calls, and struct literals.
-- Current limits: no for-in loops, while loops, switch, DB integration, middleware/auth, OpenAPI, public match, production-ready HTTP framework, or JavaScript truthiness.
+- Current limits: no DB integration, middleware/auth, OpenAPI, public match, production-ready HTTP framework, or JavaScript truthiness.
 - Run `vlt build` after route changes.
 - Run `vlt ai index` after changing source structure.
 "#;

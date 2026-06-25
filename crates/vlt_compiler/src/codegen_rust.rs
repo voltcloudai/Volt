@@ -746,12 +746,126 @@ fn emit_stmt(
                 }
             }
         }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            out.push_str(&format!(
+                "{pad}while {} {{\n",
+                emit_condition_expr(condition, env, symbols)
+            ));
+            let mut body_env = env.clone();
+            for stmt in body {
+                emit_stmt(out, stmt, indent + 1, return_type, &mut body_env, symbols);
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        Stmt::ForIn {
+            item,
+            iterable,
+            body,
+            ..
+        } => {
+            let item_ty = match infer_expr_type(iterable, env, symbols) {
+                Type::Array(inner) => Some(*inner),
+                _ => None,
+            };
+            out.push_str(&format!(
+                "{pad}for {item} in {} {{\n",
+                emit_expr(iterable, env, symbols)
+            ));
+            let mut body_env = env.clone();
+            if let Some(item_ty) = item_ty {
+                body_env.insert(item.clone(), item_ty);
+            }
+            for stmt in body {
+                emit_stmt(out, stmt, indent + 1, return_type, &mut body_env, symbols);
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        Stmt::Break { .. } => {
+            out.push_str(&format!("{pad}break;\n"));
+        }
+        Stmt::Continue { .. } => {
+            out.push_str(&format!("{pad}continue;\n"));
+        }
+        Stmt::Switch {
+            expr,
+            cases,
+            default,
+            ..
+        } => {
+            emit_switch_stmt(out, expr, cases, default, indent, return_type, env, symbols);
+        }
         Stmt::Expr { expr, .. } => {
             out.push_str(&format!(
                 "{pad}{};\n",
                 emit_expr_expected(expr, None, env, symbols)
             ));
         }
+    }
+}
+
+fn emit_switch_stmt(
+    out: &mut String,
+    expr: &Expr,
+    cases: &[SwitchCase],
+    default: &[Stmt],
+    indent: usize,
+    return_type: &Type,
+    env: &mut HashMap<String, Type>,
+    symbols: &CodegenSymbols,
+) {
+    let pad = "    ".repeat(indent);
+    let switch_ty = materialize_codegen_type(infer_expr_type(expr, env, symbols));
+    let switch_expr = emit_expr(expr, env, symbols);
+
+    for (idx, case) in cases.iter().enumerate() {
+        let keyword = if idx == 0 { "if" } else { "else if" };
+        out.push_str(&format!(
+            "{pad}{keyword} {switch_expr} == {} {{\n",
+            emit_expr_expected(&case.value, Some(&switch_ty), env, symbols)
+        ));
+        let mut case_env = env.clone();
+        for stmt in &case.body {
+            emit_stmt(out, stmt, indent + 1, return_type, &mut case_env, symbols);
+        }
+        out.push_str(&format!("{pad}}}"));
+        if idx + 1 < cases.len() || !default.is_empty() {
+            out.push(' ');
+        } else {
+            out.push('\n');
+        }
+    }
+
+    if !default.is_empty() {
+        if cases.is_empty() {
+            out.push_str(&format!("{pad}{{\n"));
+        } else {
+            out.push_str("else {\n");
+        }
+        let mut default_env = env.clone();
+        for stmt in default {
+            emit_stmt(
+                out,
+                stmt,
+                indent + 1,
+                return_type,
+                &mut default_env,
+                symbols,
+            );
+        }
+        out.push_str(&format!("{pad}}}\n"));
+    }
+}
+
+fn emit_condition_expr(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    symbols: &CodegenSymbols,
+) -> String {
+    match infer_expr_type(expr, env, symbols) {
+        Type::Option(_) => format!("{}.is_some()", emit_expr(expr, env, symbols)),
+        _ => emit_expr_expected(expr, Some(&Type::Bool), env, symbols),
     }
 }
 
@@ -1046,6 +1160,13 @@ fn always_returns_codegen(statements: &[Stmt]) -> bool {
         } if !else_body.is_empty() => {
             always_returns_codegen(then_body) && always_returns_codegen(else_body)
         }
+        Stmt::While {
+            condition, body, ..
+        } if matches!(condition, Expr::Bool { value: true, .. }) => always_returns_codegen(body),
+        Stmt::Switch { cases, default, .. } if !default.is_empty() => {
+            cases.iter().all(|case| always_returns_codegen(&case.body))
+                && always_returns_codegen(default)
+        }
         _ => false,
     })
 }
@@ -1110,6 +1231,11 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::Assign { span, .. }
         | Stmt::Return { span, .. }
         | Stmt::If { span, .. }
+        | Stmt::While { span, .. }
+        | Stmt::ForIn { span, .. }
+        | Stmt::Break { span }
+        | Stmt::Continue { span }
+        | Stmt::Switch { span, .. }
         | Stmt::Expr { span, .. } => *span,
     }
 }

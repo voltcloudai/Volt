@@ -400,6 +400,255 @@ fn array_literal_errors_are_reported() {
 }
 
 #[test]
+fn parses_array_indexing_and_method_calls() {
+    let program = parse(
+        r#"
+type User = { id: u64, email: string }
+
+function demo(users: Array<User>, matrix: Array<Array<u64>>, index: u64): void {
+  print(users[0].email)
+  print(users[index].email)
+  print(matrix[0][1])
+  users.push(User({ id: 3, email: "c@test.com" }))
+}
+"#,
+    );
+
+    let Decl::Function(function) = &program.declarations[1] else {
+        panic!("expected function");
+    };
+    assert!(matches!(
+        &function.body[0],
+        Stmt::Expr {
+            expr: Expr::Call { args, .. },
+            ..
+        } if matches!(&args[0], Expr::FieldAccess { object, .. }
+            if matches!(object.as_ref(), Expr::Index { .. }))
+    ));
+    assert!(matches!(
+        &function.body[2],
+        Stmt::Expr {
+            expr: Expr::Call { args, .. },
+            ..
+        } if matches!(&args[0], Expr::Index { target, .. }
+            if matches!(target.as_ref(), Expr::Index { .. }))
+    ));
+    assert!(matches!(
+        &function.body[3],
+        Stmt::Expr {
+            expr: Expr::MethodCall { method, .. },
+            ..
+        } if method == "push"
+    ));
+}
+
+#[test]
+fn array_indexing_checks_and_codegen() {
+    let source = source(
+        r#"
+type User = { id: u64, email: string }
+
+function firstEmail(users: Array<User>): string {
+  return users[0].email
+}
+
+function emailAt(users: Array<User>, index: u64): string {
+  return users[index].email
+}
+
+function cell(matrix: Array<Array<u64>>): u64 {
+  return matrix[0][1]
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+    let rust = generate_rust(&program);
+    assert!(rust.contains("return users[0usize].clone().email;"));
+    assert!(rust.contains("return users[(index) as usize].clone().email;"));
+    assert!(rust.contains("return matrix[0usize].clone()[1usize].clone();"));
+}
+
+#[test]
+fn array_indexing_errors_are_reported() {
+    for (text, code) in [
+        (
+            r#"function bad(value: i32): i32 { return value[0] }"#,
+            "E160",
+        ),
+        (
+            r#"function bad(values: Array<i32>): i32 { return values["0"] }"#,
+            "E161",
+        ),
+        (
+            r#"function bad(values: Array<i32>): i32 { return values[true] }"#,
+            "E161",
+        ),
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(
+            diagnostics
+                .all()
+                .iter()
+                .any(|diagnostic| diagnostic.code == code),
+            "expected diagnostic {code}"
+        );
+    }
+}
+
+#[test]
+fn array_length_checks_and_codegen() {
+    let good_source = source(
+        r#"
+type Box = { length: u64 }
+
+function size(users: Array<string>): u64 {
+  return users.length
+}
+
+function boxLength(box: Box): u64 {
+  return box.length
+}
+"#,
+    );
+    let program = parse_source(&good_source).unwrap();
+    check_without_entrypoint(&program, &good_source).expect("program should check");
+    let rust = generate_rust(&program);
+    assert!(rust.contains("return users.len() as u64;"));
+    assert!(rust.contains("return box.length;"));
+
+    let bad_source = source(r#"function bad(value: i32): u64 { return value.length }"#);
+    let bad_program = parse_source(&bad_source).unwrap();
+    let diagnostics =
+        check_without_entrypoint(&bad_program, &bad_source).expect_err("program should fail");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "E109"));
+}
+
+#[test]
+fn array_push_checks_and_codegen() {
+    let source = source(
+        r#"
+function collectIds(): Array<u64> {
+  let ids: Array<u64> = []
+  ids.push(1)
+  ids.push(2)
+  return ids
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+    let rust = generate_rust(&program);
+    assert!(rust.contains("let mut ids: Vec<u64> = vec![];"));
+    assert!(rust.contains("ids.push(1);"));
+    assert!(rust.contains("ids.push(2);"));
+}
+
+#[test]
+fn array_push_errors_are_reported() {
+    for (text, code) in [
+        (
+            r#"function bad(): void { const ids: Array<u64> = [] ids.push(1) }"#,
+            "E165",
+        ),
+        (
+            r#"function bad(): void { let ids: Array<u64> = [] ids.push("x") }"#,
+            "E164",
+        ),
+        (
+            r#"function bad(): void { let ids: Array<u64> = [] ids.push() }"#,
+            "E163",
+        ),
+        (
+            r#"function bad(value: i32): void { value.push(1) }"#,
+            "E162",
+        ),
+        (
+            r#"function bad(): void { let ids: Array<u64> = [] ids.pop() }"#,
+            "E162",
+        ),
+        (
+            r#"function bad(values: Array<Array<u64>>): void { for value in values { value.push(1) } }"#,
+            "E165",
+        ),
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(
+            diagnostics
+                .all()
+                .iter()
+                .any(|diagnostic| diagnostic.code == code),
+            "expected diagnostic {code}"
+        );
+    }
+}
+
+#[test]
+fn formatter_handles_array_index_length_and_push() {
+    let program = parse(
+        r#"
+function demo(ids: Array<u64>, index: u64): void {
+  print(ids[index])
+  print(ids.length)
+  ids.push(1)
+}
+"#,
+    );
+    let formatted = format_program(&program);
+    assert!(formatted.contains("print(ids[index])"));
+    assert!(formatted.contains("print(ids.length)"));
+    assert!(formatted.contains("ids.push(1)"));
+}
+
+#[test]
+fn phase_4_3_acceptance_program_generates_and_runs() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("phase43.vlt");
+    std::fs::write(
+        &file,
+        r#"
+type User = {
+  id: u64
+  email: string
+}
+
+function firstEmail(users: Array<User>): string {
+  return users[0].email
+}
+
+function size(users: Array<User>): u64 {
+  return users.length
+}
+
+function users(): Array<User> {
+  let users: Array<User> = []
+  users.push(User({ id: 1, email: "a@test.com" }))
+  users.push(User({ id: 2, email: "b@test.com" }))
+  return users
+}
+
+function main(): void {
+  print(firstEmail(users()))
+  print(size(users()))
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run_file(&file, dir.path()).unwrap();
+    assert_eq!(output.trim(), "\"a@test.com\"\n2");
+}
+
+#[test]
 fn formatter_handles_phase_4_1_syntax() {
     let program = parse(
         r#"

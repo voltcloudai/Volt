@@ -39,6 +39,7 @@ The current language slice supports:
 - `Array<T>`.
 - `array.push(value)` on mutable arrays.
 - Array indexing.
+- `array.length`.
 - `if` / `else`.
 - `while`.
 - `for item in array`.
@@ -77,6 +78,7 @@ Arrays:
 - `Array<T>` lowers to `Vec<T>`.
 - Array indexing returns an owned value.
 - For non-Copy values, generated Rust may clone.
+- `array.length` lowers to Rust `Vec::len()` and returns `u64`.
 - Out-of-bounds indexing may panic in the current version.
 
 Mutation:
@@ -201,6 +203,14 @@ Array indexing:
 function firstEmail(users: Array<User>): string {
   const first = users[0]
   return first.email
+}
+```
+
+Array length:
+
+```volt
+function size(users: Array<User>): u64 {
+  return users.length
 }
 ```
 

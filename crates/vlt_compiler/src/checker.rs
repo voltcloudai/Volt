@@ -909,6 +909,12 @@ impl<'a> Checker<'a> {
             Expr::Call { callee, args, span } => {
                 self.check_call(callee, args, *span, env, expected)
             }
+            Expr::MethodCall {
+                object,
+                method,
+                args,
+                span,
+            } => self.check_method_call(object, method, args, *span, env),
             Expr::Try { expr, .. } => {
                 let actual = self.check_expr(expr, env, None);
                 match actual {
@@ -954,6 +960,16 @@ impl<'a> Checker<'a> {
             } => {
                 let object_ty = self.check_expr(object, env, None);
                 match object_ty {
+                    Type::Array(_) if field == "length" => Type::U64,
+                    Type::Array(_) => {
+                        self.error(
+                            "E109",
+                            format!("cannot access field `{field}` on array"),
+                            *span,
+                            "arrays currently support only the `.length` field",
+                        );
+                        Type::Unknown
+                    }
                     Type::Struct(name) => {
                         let Some(struct_sig) = self.structs.get(&name).cloned() else {
                             self.error(
@@ -989,6 +1005,35 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            Expr::Index {
+                target,
+                index,
+                span,
+            } => {
+                let target_ty = self.check_expr(target, env, None);
+                let index_ty = self.check_expr(index, env, None);
+                if !matches!(index_ty, Type::Unknown) && !index_ty.is_integer() {
+                    self.error(
+                        "E161",
+                        format!("array index must be an integer, found `{index_ty}`"),
+                        index.span(),
+                        "use an i32, i64, u32, u64, or inferred integer index",
+                    );
+                }
+                match target_ty {
+                    Type::Array(inner) => *inner,
+                    Type::Unknown => Type::Unknown,
+                    other => {
+                        self.error(
+                            "E160",
+                            format!("cannot index non-array type `{other}`"),
+                            *span,
+                            "index only values of type `Array<T>`",
+                        );
+                        Type::Unknown
+                    }
+                }
+            }
             Expr::Unary { op, expr, span } => match op {
                 UnaryOp::Not => {
                     let actual = self.check_expr(expr, env, None);
@@ -1006,6 +1051,86 @@ impl<'a> Checker<'a> {
                     }
                 }
             },
+        }
+    }
+
+    fn check_method_call(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        args: &[Expr],
+        span: Span,
+        env: &LocalEnv,
+    ) -> Type {
+        let object_ty = self.check_expr(object, env, None);
+        match object_ty {
+            Type::Array(inner) if method == "push" => {
+                if args.len() != 1 {
+                    self.error(
+                        "E163",
+                        format!("array push expects one argument, found {}", args.len()),
+                        span,
+                        "call `array.push(value)` with exactly one value",
+                    );
+                    for arg in args {
+                        self.check_expr(arg, env, None);
+                    }
+                    return Type::Void;
+                }
+
+                if !mutable_local_target(object, env) {
+                    self.error(
+                        "E165",
+                        "cannot mutate immutable array",
+                        object.span(),
+                        "call `push` only on a mutable `let` array binding",
+                    );
+                }
+
+                let actual = self.check_expr(&args[0], env, Some(&inner));
+                if !inner.is_assignable_from(&actual) {
+                    self.error(
+                        "E164",
+                        format!(
+                            "array push value type mismatch: expected `{inner}`, found `{actual}`"
+                        ),
+                        args[0].span(),
+                        format!("push a value of type `{inner}`"),
+                    );
+                }
+
+                Type::Void
+            }
+            Type::Array(_) => {
+                self.error(
+                    "E162",
+                    format!("unknown method `{method}` for array"),
+                    span,
+                    "arrays currently support only `push(value)`",
+                );
+                for arg in args {
+                    self.check_expr(arg, env, None);
+                }
+                Type::Unknown
+            }
+            Type::Unknown => {
+                for arg in args {
+                    self.check_expr(arg, env, None);
+                }
+                Type::Unknown
+            }
+            other => {
+                self.error(
+                    "E162",
+                    format!("unknown method `{method}` for type `{other}`"),
+                    span,
+                    "method calls are currently supported only for arrays",
+                );
+                for arg in args {
+                    self.check_expr(arg, env, None);
+                }
+                Type::Unknown
+            }
         }
     }
 
@@ -1492,6 +1617,15 @@ fn materialize_inferred(ty: Type) -> Type {
         Type::Array(inner) => Type::Array(Box::new(materialize_inferred(*inner))),
         other => other,
     }
+}
+
+fn mutable_local_target(expr: &Expr, env: &LocalEnv) -> bool {
+    let Expr::Var { name, .. } = expr else {
+        return false;
+    };
+    env.get(name)
+        .map(|binding| binding.mutable)
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Default)]

@@ -892,6 +892,16 @@ impl Parser<'_> {
                 };
             } else if self.at(TokenKindName::LParen) {
                 expr = self.parse_postfix_call(expr);
+            } else if self.eat(TokenKindName::LBracket) {
+                let index = self.parse_expr();
+                let end = self
+                    .expect(TokenKindName::RBracket, "expected `]` after array index")
+                    .end;
+                expr = Expr::Index {
+                    span: Span::new(expr.span().start, end),
+                    target: Box::new(expr),
+                    index: Box::new(index),
+                };
             } else {
                 break;
             }
@@ -1030,26 +1040,40 @@ impl Parser<'_> {
                 span,
             },
             Expr::FieldAccess { object, field, .. } => {
-                if let Expr::Var { name: error, .. } = *object {
-                    if args.len() == 1 {
-                        if let Some(fields) = object_literal_fields(&args[0]) {
-                            return Expr::ErrorVariantLiteral {
-                                error,
-                                variant: field,
-                                fields,
-                                span,
-                            };
+                let object_expr = *object;
+                match object_expr {
+                    Expr::Var {
+                        name: error,
+                        span: object_span,
+                    } => {
+                        if args.len() == 1 {
+                            if let Some(fields) = object_literal_fields(&args[0]) {
+                                return Expr::ErrorVariantLiteral {
+                                    error,
+                                    variant: field,
+                                    fields,
+                                    span,
+                                };
+                            }
+                        }
+
+                        Expr::MethodCall {
+                            object: Box::new(Expr::Var {
+                                name: error,
+                                span: object_span,
+                            }),
+                            method: field,
+                            args,
+                            span,
                         }
                     }
+                    object_expr => Expr::MethodCall {
+                        object: Box::new(object_expr),
+                        method: field,
+                        args,
+                        span,
+                    },
                 }
-
-                self.error(
-                    "E015",
-                    "unsupported callee expression",
-                    span,
-                    "call functions as `name(...)` or construct errors as `Error.Variant({ ... })`",
-                );
-                Expr::Int { value: 0, span }
             }
             _ => {
                 self.error(

@@ -270,6 +270,17 @@ fn format_expr(expr: &Expr) -> String {
             callee,
             args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
         ),
+        Expr::MethodCall {
+            object,
+            method,
+            args,
+            ..
+        } => format!(
+            "{}.{}({})",
+            format_expr(object),
+            method,
+            args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
+        ),
         Expr::Try { expr, .. } => format!("try {}", format_expr(expr)),
         Expr::Unary { op, expr, .. } => match op {
             UnaryOp::Not => format!("!{}", format_expr(expr)),
@@ -321,6 +332,9 @@ fn format_expr(expr: &Expr) -> String {
             format!("{error}.{variant}({{ {body} }})")
         }
         Expr::FieldAccess { object, field, .. } => format!("{}.{}", format_expr(object), field),
+        Expr::Index { target, index, .. } => {
+            format!("{}[{}]", format_expr(target), format_expr(index))
+        }
     }
 }
 

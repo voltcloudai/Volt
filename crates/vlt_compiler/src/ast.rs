@@ -212,6 +212,12 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    MethodCall {
+        object: Box<Expr>,
+        method: String,
+        args: Vec<Expr>,
+        span: Span,
+    },
     Try {
         expr: Box<Expr>,
         span: Span,
@@ -232,6 +238,11 @@ pub enum Expr {
     FieldAccess {
         object: Box<Expr>,
         field: String,
+        span: Span,
+    },
+    Index {
+        target: Box<Expr>,
+        index: Box<Expr>,
         span: Span,
     },
     Unary {
@@ -257,11 +268,13 @@ impl Expr {
             | Expr::Var { span, .. }
             | Expr::Binary { span, .. }
             | Expr::Call { span, .. }
+            | Expr::MethodCall { span, .. }
             | Expr::Try { span, .. }
             | Expr::ObjectLiteral { span, .. }
             | Expr::ArrayLiteral { span, .. }
             | Expr::StructLiteral { span, .. }
             | Expr::FieldAccess { span, .. }
+            | Expr::Index { span, .. }
             | Expr::Unary { span, .. }
             | Expr::ErrorVariantLiteral { span, .. } => *span,
         }

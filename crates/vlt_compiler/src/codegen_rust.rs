@@ -397,7 +397,15 @@ impl AxumLowering<'_> {
             }
             Expr::FieldAccess { object, field, .. } => {
                 let base = self.lower_route_expr(object)?;
+                if field == "length" {
+                    return Some(format!("{base}.len() as u64"));
+                }
                 Some(format!("{base}.{field}"))
+            }
+            Expr::Index { target, index, .. } => {
+                let target = self.lower_route_expr(target)?;
+                let index = self.lower_route_index_expr(index)?;
+                Some(format!("{target}[{index}].clone()"))
             }
             Expr::StructLiteral { name, fields, .. } => {
                 let mut parts = Vec::new();
@@ -423,7 +431,27 @@ impl AxumLowering<'_> {
                 }
                 Some(format!("{callee}({})", lowered.join(", ")))
             }
+            Expr::MethodCall {
+                object,
+                method,
+                args,
+                ..
+            } => {
+                let object = self.lower_route_expr(object)?;
+                let mut lowered = Vec::new();
+                for arg in args {
+                    lowered.push(self.lower_route_expr(arg)?);
+                }
+                Some(format!("{object}.{method}({})", lowered.join(", ")))
+            }
             _ => None,
+        }
+    }
+
+    fn lower_route_index_expr(&mut self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Int { value, .. } => Some(format!("{value}usize")),
+            _ => Some(format!("({}) as usize", self.lower_route_expr(expr)?)),
         }
     }
 
@@ -983,6 +1011,20 @@ fn emit_expr(expr: &Expr, env: &HashMap<String, Type>, symbols: &CodegenSymbols)
                     .join(", ")
             ),
         },
+        Expr::MethodCall {
+            object,
+            method,
+            args,
+            ..
+        } => format!(
+            "{}.{}({})",
+            emit_expr(object, env, symbols),
+            method,
+            args.iter()
+                .map(|arg| emit_expr(arg, env, symbols))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         Expr::Try { expr, .. } => format!("{}?", emit_expr(expr, env, symbols)),
         Expr::ObjectLiteral { fields, .. } => {
             let body = fields
@@ -1016,7 +1058,18 @@ fn emit_expr(expr: &Expr, env: &HashMap<String, Type>, symbols: &CodegenSymbols)
             format!("{name} {{ {body} }}")
         }
         Expr::FieldAccess { object, field, .. } => {
+            if matches!(infer_expr_type(object, env, symbols), Type::Array(_)) && field == "length"
+            {
+                return format!("{}.len() as u64", emit_expr(object, env, symbols));
+            }
             format!("{}.{}", emit_expr(object, env, symbols), field)
+        }
+        Expr::Index { target, index, .. } => {
+            format!(
+                "{}[{}].clone()",
+                emit_expr(target, env, symbols),
+                emit_index_expr(index, env, symbols)
+            )
         }
         Expr::Unary { op, expr, .. } => match op {
             UnaryOp::Not => match infer_expr_type(expr, env, symbols) {
@@ -1037,6 +1090,13 @@ fn emit_expr(expr: &Expr, env: &HashMap<String, Type>, symbols: &CodegenSymbols)
                 .join(", ");
             format!("{error}::{variant} {{ {body} }}")
         }
+    }
+}
+
+fn emit_index_expr(expr: &Expr, env: &HashMap<String, Type>, symbols: &CodegenSymbols) -> String {
+    match expr {
+        Expr::Int { value, .. } => format!("{value}usize"),
+        _ => format!("({}) as usize", emit_expr(expr, env, symbols)),
     }
 }
 
@@ -1075,6 +1135,8 @@ fn infer_expr_type(expr: &Expr, env: &HashMap<String, Type>, symbols: &CodegenSy
             .get(callee)
             .map(|sig| sig.return_type.clone())
             .unwrap_or(Type::Unknown),
+        Expr::MethodCall { method, .. } if method == "push" => Type::Void,
+        Expr::MethodCall { .. } => Type::Unknown,
         Expr::Try { expr, .. } => match infer_expr_type(expr, env, symbols) {
             Type::Result(ok, _) => *ok,
             _ => Type::Unknown,
@@ -1089,12 +1151,17 @@ fn infer_expr_type(expr: &Expr, env: &HashMap<String, Type>, symbols: &CodegenSy
         }
         Expr::StructLiteral { name, .. } => Type::Struct(name.clone()),
         Expr::FieldAccess { object, field, .. } => match infer_expr_type(object, env, symbols) {
+            Type::Array(_) if field == "length" => Type::U64,
             Type::Struct(name) => symbols
                 .structs
                 .get(&name)
                 .and_then(|fields| fields.get(field))
                 .cloned()
                 .unwrap_or(Type::Unknown),
+            _ => Type::Unknown,
+        },
+        Expr::Index { target, .. } => match infer_expr_type(target, env, symbols) {
+            Type::Array(inner) => *inner,
             _ => Type::Unknown,
         },
         Expr::Unary { .. } => Type::Bool,

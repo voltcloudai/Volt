@@ -129,8 +129,22 @@ pub enum Stmt {
         span: Span,
     },
     Assign {
-        name: String,
+        target: AssignTarget,
         expr: Expr,
+        span: Span,
+    },
+    CompoundAssign {
+        target: AssignTarget,
+        op: CompoundAssignOp,
+        expr: Expr,
+        span: Span,
+    },
+    Increment {
+        target: AssignTarget,
+        span: Span,
+    },
+    Decrement {
+        target: AssignTarget,
         span: Span,
     },
     Return {
@@ -170,6 +184,19 @@ pub enum Stmt {
         expr: Expr,
         span: Span,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AssignTarget {
+    Ident(String),
+    Field { object: Expr, field: String },
+    Unsupported(Expr),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompoundAssignOp {
+    Add,
+    Sub,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

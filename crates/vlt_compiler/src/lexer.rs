@@ -37,6 +37,10 @@ pub enum TokenKind {
     Dot,
     Ellipsis,
     Equals,
+    PlusEquals,
+    MinusEquals,
+    PlusPlus,
+    MinusMinus,
     Plus,
     Minus,
     Star,
@@ -98,7 +102,11 @@ impl Lexer<'_> {
                     self.push(TokenKind::Ellipsis, start, start + 3)
                 }
                 '.' => self.push(TokenKind::Dot, start, start + 1),
+                '+' if self.consume_if('=') => self.push(TokenKind::PlusEquals, start, start + 2),
+                '+' if self.consume_if('+') => self.push(TokenKind::PlusPlus, start, start + 2),
                 '+' => self.push(TokenKind::Plus, start, start + 1),
+                '-' if self.consume_if('=') => self.push(TokenKind::MinusEquals, start, start + 2),
+                '-' if self.consume_if('-') => self.push(TokenKind::MinusMinus, start, start + 2),
                 '-' => self.push(TokenKind::Minus, start, start + 1),
                 '*' => self.push(TokenKind::Star, start, start + 1),
                 '/' => self.push(TokenKind::Slash, start, start + 1),

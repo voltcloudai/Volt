@@ -16,12 +16,21 @@
 - Use `&&` and `||` only with bool operands.
 - Use `Array<T>` for arrays and `[a, b, c]` for array literals.
 - Empty arrays require contextual type, e.g. `const ids: Array<u64> = []`.
+- Use `array[index]` to read array values.
+- `array[index]` may panic at runtime if out of bounds in current codegen.
+- Use `array.length` for array length; it returns `u64`.
 - Use owned values; do not expose Rust references, lifetimes, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs in Volt code.
 - Do not use `ctx.arena` in user Volt code; request-scoped arenas are internal-only future implementation details.
 - Generated structs derive Clone.
+- Use `let array: Array<T> = []` before calling `array.push(value)` on an empty array.
 - Use `array.push(value)` only on mutable arrays.
 - Array indexing returns an owned value and may clone for non-Copy values.
 - Use field assignment only on mutable local structs.
+- Do not use nested field assignment, field assignment on Option-narrowed bindings, or array element assignment.
+- Use `+=` and `-=` for numeric compound assignment.
+- Use `++` and `--` only as standalone statements on mutable numeric variables.
+- Do not use prefix `++` / `--`, field compound assignment, or `*=`, `/=`, `%=`.
+- Assignment remains statement-only.
 - Use `while (condition) { ... }` for condition-based loops.
 - Use `for item in array { ... }` to iterate over `Array<T>`.
 - `for-in` currently works over `Array<T>`.

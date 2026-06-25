@@ -126,11 +126,16 @@ fn format_route(out: &mut String, route: &RouteDecl) {
     if !route.effects.is_empty() {
         out.push_str(&format!("  effects [{}]\n", route.effects.join(", ")));
     }
-    out.push_str("{\n");
-    for stmt in &route.statements {
-        format_stmt(out, stmt, 1);
+    if let Some(handler) = &route.handler {
+        out.push_str(&format!("  handler {handler}\n"));
     }
-    out.push_str("}\n");
+    if !route.statements.is_empty() {
+        out.push_str("{\n");
+        for stmt in &route.statements {
+            format_stmt(out, stmt, 1);
+        }
+        out.push_str("}\n");
+    }
 }
 
 fn format_route_fields(out: &mut String, label: &str, fields: &[RouteField]) {
@@ -165,8 +170,28 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
                 format_expr(expr)
             ));
         }
-        Stmt::Assign { name, expr, .. } => {
-            out.push_str(&format!("{pad}{name} = {}\n", format_expr(expr)));
+        Stmt::Assign { target, expr, .. } => {
+            out.push_str(&format!(
+                "{pad}{} = {}\n",
+                format_assign_target(target),
+                format_expr(expr)
+            ));
+        }
+        Stmt::CompoundAssign {
+            target, op, expr, ..
+        } => {
+            out.push_str(&format!(
+                "{pad}{} {}= {}\n",
+                format_assign_target(target),
+                format_compound_assign_op(*op),
+                format_expr(expr)
+            ));
+        }
+        Stmt::Increment { target, .. } => {
+            out.push_str(&format!("{pad}{}++\n", format_assign_target(target)));
+        }
+        Stmt::Decrement { target, .. } => {
+            out.push_str(&format!("{pad}{}--\n", format_assign_target(target)));
         }
         Stmt::Return { expr, .. } => {
             out.push_str(&format!("{pad}return {}\n", format_expr(expr)));
@@ -247,6 +272,14 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
         Stmt::Expr { expr, .. } => {
             out.push_str(&format!("{pad}{}\n", format_expr(expr)));
         }
+    }
+}
+
+fn format_assign_target(target: &AssignTarget) -> String {
+    match target {
+        AssignTarget::Ident(name) => name.clone(),
+        AssignTarget::Field { object, field } => format!("{}.{}", format_expr(object), field),
+        AssignTarget::Unsupported(expr) => format_expr(expr),
     }
 }
 
@@ -362,6 +395,13 @@ fn format_op(op: BinaryOp) -> &'static str {
         BinaryOp::GtEq => ">=",
         BinaryOp::And => "&&",
         BinaryOp::Or => "||",
+    }
+}
+
+fn format_compound_assign_op(op: CompoundAssignOp) -> &'static str {
+    match op {
+        CompoundAssignOp::Add => "+",
+        CompoundAssignOp::Sub => "-",
     }
 }
 

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use tempfile::tempdir;
-use vlt_compiler::ast::{Decl, Expr, HttpMethod, Stmt};
+use vlt_compiler::ast::{AssignTarget, CompoundAssignOp, Decl, Expr, HttpMethod, Stmt};
 use vlt_compiler::project::run_file;
 use vlt_compiler::types::Type;
 use vlt_compiler::{
@@ -235,6 +235,247 @@ fn assignment_errors_are_reported() {
 }
 
 #[test]
+fn field_assignment_checks_formats_and_generates() {
+    let source = source(
+        r#"
+type User = {
+  id: u64
+  name: string
+}
+
+function rename(user: User): User {
+  let updated = user
+  updated.name = "Carlos"
+  return updated
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+
+    let Decl::Function(function) = &program.declarations[1] else {
+        panic!("expected function");
+    };
+    assert!(matches!(
+        &function.body[1],
+        Stmt::Assign {
+            target: AssignTarget::Field { field, .. },
+            ..
+        } if field == "name"
+    ));
+
+    let formatted = format_program(&program);
+    assert!(formatted.contains("updated.name = \"Carlos\""));
+
+    let rust = generate_rust(&program);
+    assert!(rust.contains("let mut updated = user;"));
+    assert!(rust.contains("updated.name = \"Carlos\".to_string();"));
+}
+
+#[test]
+fn field_assignment_errors_are_reported() {
+    for (text, code) in [
+        (
+            r#"type User = { name: string } function bad(user: User): User { const updated = user updated.name = "Carlos" return updated }"#,
+            "E166",
+        ),
+        (
+            r#"type User = { name: string } function bad(user: User): User { let updated = user updated.email = "c@test.com" return updated }"#,
+            "E167",
+        ),
+        (
+            r#"type User = { name: string } function bad(user: User): User { let updated = user updated.name = 1 return updated }"#,
+            "E168",
+        ),
+        (
+            r#"type User = { name: string } function bad(): void { missing.name = "Carlos" }"#,
+            "E130",
+        ),
+        (
+            r#"function bad(): void { let value = 1 value.name = "Carlos" }"#,
+            "E169",
+        ),
+        (
+            r#"type Profile = { name: string } type User = { profile: Profile } function bad(user: User): User { let updated = user updated.profile.name = "Carlos" return updated }"#,
+            "E169",
+        ),
+        (
+            r#"type User = { name: string } function getUser(): User { return User({ name: "A" }) } function bad(): void { getUser().name = "Carlos" }"#,
+            "E169",
+        ),
+        (
+            r#"type User = { name: string } function bad(users: Array<User>): void { users[0].name = "Carlos" }"#,
+            "E169",
+        ),
+        (
+            r#"type User = { name: string } function bad(user: Option<User>): void { if (user) { user.name = "Carlos" } }"#,
+            "E169",
+        ),
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(
+            diagnostics
+                .all()
+                .iter()
+                .any(|diagnostic| diagnostic.code == code),
+            "expected diagnostic {code}"
+        );
+    }
+}
+
+#[test]
+fn compound_assignment_checks_formats_and_generates() {
+    let source = source(
+        r#"
+function counter(): i32 {
+  let count = 0
+  count += 1
+  count -= 1
+  return count
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+
+    let Decl::Function(function) = &program.declarations[0] else {
+        panic!("expected function");
+    };
+    assert!(matches!(
+        &function.body[1],
+        Stmt::CompoundAssign {
+            target: AssignTarget::Ident(name),
+            op: CompoundAssignOp::Add,
+            ..
+        } if name == "count"
+    ));
+    assert!(matches!(
+        &function.body[2],
+        Stmt::CompoundAssign {
+            target: AssignTarget::Ident(name),
+            op: CompoundAssignOp::Sub,
+            ..
+        } if name == "count"
+    ));
+
+    let formatted = format_program(&program);
+    assert!(formatted.contains("count += 1"));
+    assert!(formatted.contains("count -= 1"));
+
+    let rust = generate_rust(&program);
+    assert!(rust.contains("count += 1;"));
+    assert!(rust.contains("count -= 1;"));
+}
+
+#[test]
+fn compound_assignment_errors_are_reported() {
+    for (text, code) in [
+        (
+            r#"function bad(): i32 { const count = 0 count += 1 return count }"#,
+            "E170",
+        ),
+        (
+            r#"function bad(): i32 { let count = 0 count += "x" return count }"#,
+            "E171",
+        ),
+        (
+            r#"function bad(): i32 { let count = 0 count += true return count }"#,
+            "E171",
+        ),
+        (r#"function bad(): void { count += 1 }"#, "E130"),
+        (
+            r#"function bad(values: Array<i32>): void { for value in values { value += 1 } }"#,
+            "E170",
+        ),
+        (
+            r#"type User = { age: i32 } function bad(user: User): void { let updated = user updated.age += 1 }"#,
+            "E169",
+        ),
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(
+            diagnostics
+                .all()
+                .iter()
+                .any(|diagnostic| diagnostic.code == code),
+            "expected diagnostic {code}"
+        );
+    }
+}
+
+#[test]
+fn increment_decrement_checks_formats_and_generates() {
+    let source = source(
+        r#"
+function counter(): i32 {
+  let count = 0
+  count++
+  count--
+  return count
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+
+    let formatted = format_program(&program);
+    assert!(formatted.contains("count++"));
+    assert!(formatted.contains("count--"));
+
+    let rust = generate_rust(&program);
+    assert!(rust.contains("count += 1;"));
+    assert!(rust.contains("count -= 1;"));
+}
+
+#[test]
+fn increment_decrement_errors_are_reported() {
+    for (text, code) in [
+        (
+            r#"function bad(): i32 { const count = 0 count++ return count }"#,
+            "E170",
+        ),
+        (
+            r#"function bad(): string { let name = "Carlos" name++ return name }"#,
+            "E171",
+        ),
+        (
+            r#"function bad(values: Array<i32>): void { for value in values { value++ } }"#,
+            "E170",
+        ),
+    ] {
+        let source = source(text);
+        let program = parse_source(&source).unwrap();
+        let diagnostics =
+            check_without_entrypoint(&program, &source).expect_err("program should fail");
+        assert!(
+            diagnostics
+                .all()
+                .iter()
+                .any(|diagnostic| diagnostic.code == code),
+            "expected diagnostic {code}"
+        );
+    }
+
+    for text in [
+        r#"function bad(): i32 { let count = 0 const next = count++ return next }"#,
+        r#"function bad(): i32 { let count = 0 ++count return count }"#,
+        r#"function bad(): i32 { let count = 0 --count return count }"#,
+    ] {
+        let source = source(text);
+        assert!(
+            parse_source(&source).is_err(),
+            "program should fail to parse"
+        );
+    }
+}
+
+#[test]
 fn boolean_operators_parse_check_and_generate() {
     let source = source(
         r#"
@@ -258,7 +499,7 @@ function guarded(isAdmin: bool, isOwner: bool): string {
     check_without_entrypoint(&program, &source).expect("program should check");
     let rust = generate_rust(&program);
     assert!(rust.contains("return isAdmin || isOwner;"));
-    assert!(rust.contains("return email != \"\".to_string() && name != \"\".to_string();"));
+    assert!(rust.contains("return email != \"\" && name != \"\";"));
     assert!(rust.contains("if isAdmin && isOwner {"));
 }
 
@@ -531,6 +772,36 @@ function boxLength(box: Box): u64 {
 }
 
 #[test]
+fn axum_inline_route_length_lowering_distinguishes_arrays_from_struct_fields() {
+    let source = source(
+        r#"
+type Box = { length: u64 }
+type LengthResponse = { value: u64 }
+
+route get "/array-length"
+  ok 200 LengthResponse
+{
+  const users: Array<string> = ["a", "b"]
+  return ok(LengthResponse({ value: users.length }))
+}
+
+route get "/box-length"
+  ok 200 LengthResponse
+{
+  const box = Box({ length: 42 })
+  return ok(LengthResponse({ value: box.length }))
+}
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_without_entrypoint(&program, &source).expect("program should check");
+    let rust = generate_axum_server(&program, &source).expect("axum lowering should succeed");
+    assert!(rust.contains("value: users.len() as u64"));
+    assert!(rust.contains("value: box.length"));
+    assert!(!rust.contains("value: box.len() as u64"));
+}
+
+#[test]
 fn array_push_checks_and_codegen() {
     let source = source(
         r#"
@@ -619,33 +890,55 @@ fn phase_4_3_acceptance_program_generates_and_runs() {
 type User = {
   id: u64
   email: string
+  name: string
+  role: string
 }
 
-function firstEmail(users: Array<User>): string {
-  return users[0].email
+function normalizeUsers(users: Array<User>): Array<User> {
+  let result: Array<User> = []
+  let index: u64 = 0
+
+  while (index < users.length) {
+    let user = users[index]
+
+    if (user.role === "admin") {
+      user.name = "Admin"
+    }
+
+    result.push(user)
+    index++
+  }
+
+  return result
 }
 
-function size(users: Array<User>): u64 {
-  return users.length
-}
+function countAdmins(users: Array<User>): i32 {
+  let count = 0
 
-function users(): Array<User> {
-  let users: Array<User> = []
-  users.push(User({ id: 1, email: "a@test.com" }))
-  users.push(User({ id: 2, email: "b@test.com" }))
-  return users
+  for user in users {
+    if (user.role === "admin") {
+      count += 1
+    }
+  }
+
+  return count
 }
 
 function main(): void {
-  print(firstEmail(users()))
-  print(size(users()))
+  const users = [
+    User({ id: 1, email: "a@test.com", name: "A", role: "admin" }),
+    User({ id: 2, email: "b@test.com", name: "B", role: "member" }),
+  ]
+  const normalized = normalizeUsers(users)
+  print(normalized[0].name)
+  print(countAdmins(normalized))
 }
 "#,
     )
     .unwrap();
 
     let output = run_file(&file, dir.path()).unwrap();
-    assert_eq!(output.trim(), "\"a@test.com\"\n2");
+    assert_eq!(output.trim(), "\"Admin\"\n1");
 }
 
 #[test]
@@ -1717,6 +2010,71 @@ route get "/users/{id}"
     };
     assert_eq!(route.handler.as_deref(), Some("getUserRoute"));
     assert!(route.statements.is_empty());
+}
+
+#[test]
+fn formatter_preserves_handler_style_routes_without_empty_body() {
+    let program = parse(
+        r#"
+type User = { id: u64 }
+type UpdateUserInput = { name: string }
+
+error UserError {
+  UserNotFound { message: string }
+  DatabaseError { message: string }
+}
+
+function getUserRoute(params: GetUsersIdParams, ctx: Ctx): User {
+  return User({ id: params.id })
+}
+
+function updateUserRoute(params: PatchUsersIdParams, body: UpdateUserInput, ctx: Ctx): Result<User, UserError> {
+  return ok(User({ id: params.id }))
+}
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  handler getUserRoute
+
+route patch "/users/{id}"
+  params { id: u64 }
+  body UpdateUserInput
+  ok 200 User
+  errors UserError {
+    UserNotFound 404
+    DatabaseError 500
+  }
+  effects [db, log]
+  handler updateUserRoute
+"#,
+    );
+    let formatted = format_program(&program);
+    assert!(formatted.contains("handler getUserRoute"));
+    assert!(formatted.contains("handler updateUserRoute"));
+    assert!(
+        formatted.contains("errors UserError {\n    UserNotFound 404\n    DatabaseError 500\n  }")
+    );
+    assert!(formatted.contains("effects [db, log]"));
+    assert!(!formatted.contains("handler getUserRoute\n{\n}"));
+}
+
+#[test]
+fn formatter_still_prints_inline_route_body() {
+    let program = parse(
+        r#"
+type HealthResponse = { status: string }
+
+route get "/health"
+  ok 200 HealthResponse
+{
+  return ok(HealthResponse({ status: "ok" }))
+}
+"#,
+    );
+    let formatted = format_program(&program);
+    assert!(formatted.contains("route get \"/health\""));
+    assert!(formatted.contains("{\n  return ok(HealthResponse({ status: \"ok\" }))\n}"));
 }
 
 #[test]

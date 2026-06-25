@@ -538,21 +538,50 @@ impl Parser<'_> {
             TokenKind::Break => self.parse_break(),
             TokenKind::Continue => self.parse_continue(),
             TokenKind::Switch => self.parse_switch(),
-            TokenKind::Ident(_) if self.peek_next_is(TokenKindName::Equals) => self.parse_assign(),
             _ => {
                 let expr = self.parse_expr();
                 let span = expr.span();
-                Stmt::Expr { expr, span }
+                if self.eat(TokenKindName::Equals) {
+                    let value = self.parse_expr();
+                    let span = span.merge(value.span());
+                    Stmt::Assign {
+                        target: assign_target_from_expr(expr),
+                        expr: value,
+                        span,
+                    }
+                } else if self.eat(TokenKindName::PlusEquals) {
+                    let value = self.parse_expr();
+                    let span = span.merge(value.span());
+                    Stmt::CompoundAssign {
+                        target: assign_target_from_expr(expr),
+                        op: CompoundAssignOp::Add,
+                        expr: value,
+                        span,
+                    }
+                } else if self.eat(TokenKindName::MinusEquals) {
+                    let value = self.parse_expr();
+                    let span = span.merge(value.span());
+                    Stmt::CompoundAssign {
+                        target: assign_target_from_expr(expr),
+                        op: CompoundAssignOp::Sub,
+                        expr: value,
+                        span,
+                    }
+                } else if self.eat(TokenKindName::PlusPlus) {
+                    Stmt::Increment {
+                        target: assign_target_from_expr(expr),
+                        span,
+                    }
+                } else if self.eat(TokenKindName::MinusMinus) {
+                    Stmt::Decrement {
+                        target: assign_target_from_expr(expr),
+                        span,
+                    }
+                } else {
+                    Stmt::Expr { expr, span }
+                }
             }
         }
-    }
-
-    fn parse_assign(&mut self) -> Stmt {
-        let (name, name_span) = self.expect_ident("expected assignment target");
-        self.expect(TokenKindName::Equals, "expected `=` in assignment");
-        let expr = self.parse_expr();
-        let span = name_span.merge(expr.span());
-        Stmt::Assign { name, expr, span }
     }
 
     fn parse_var(&mut self, mutable: bool) -> Stmt {
@@ -1207,12 +1236,6 @@ impl Parser<'_> {
         &self.peek().kind
     }
 
-    fn peek_next_is(&self, expected: TokenKindName) -> bool {
-        self.tokens
-            .get(self.pos + 1)
-            .is_some_and(|token| expected.matches(&token.kind))
-    }
-
     fn advance(&mut self) -> Token {
         let token = self.tokens[self.pos].clone();
         if !matches!(token.kind, TokenKind::Eof) {
@@ -1249,6 +1272,9 @@ fn stmt_span(stmt: &Stmt) -> Span {
     match stmt {
         Stmt::Var { span, .. }
         | Stmt::Assign { span, .. }
+        | Stmt::CompoundAssign { span, .. }
+        | Stmt::Increment { span, .. }
+        | Stmt::Decrement { span, .. }
         | Stmt::Return { span, .. }
         | Stmt::If { span, .. }
         | Stmt::While { span, .. }
@@ -1257,6 +1283,17 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::Continue { span }
         | Stmt::Switch { span, .. }
         | Stmt::Expr { span, .. } => *span,
+    }
+}
+
+fn assign_target_from_expr(expr: Expr) -> AssignTarget {
+    match expr {
+        Expr::Var { name, .. } => AssignTarget::Ident(name),
+        Expr::FieldAccess { object, field, .. } => AssignTarget::Field {
+            object: *object,
+            field,
+        },
+        expr => AssignTarget::Unsupported(expr),
     }
 }
 
@@ -1304,6 +1341,10 @@ enum TokenKindName {
     Colon,
     Comma,
     Equals,
+    PlusEquals,
+    MinusEquals,
+    PlusPlus,
+    MinusMinus,
     Dot,
     Ellipsis,
     Plus,
@@ -1355,6 +1396,10 @@ impl TokenKindName {
                 | (TokenKindName::Colon, TokenKind::Colon)
                 | (TokenKindName::Comma, TokenKind::Comma)
                 | (TokenKindName::Equals, TokenKind::Equals)
+                | (TokenKindName::PlusEquals, TokenKind::PlusEquals)
+                | (TokenKindName::MinusEquals, TokenKind::MinusEquals)
+                | (TokenKindName::PlusPlus, TokenKind::PlusPlus)
+                | (TokenKindName::MinusMinus, TokenKind::MinusMinus)
                 | (TokenKindName::Dot, TokenKind::Dot)
                 | (TokenKindName::Ellipsis, TokenKind::Ellipsis)
                 | (TokenKindName::Plus, TokenKind::Plus)

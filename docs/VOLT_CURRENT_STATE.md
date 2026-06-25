@@ -35,6 +35,8 @@ The current language slice supports:
 - `let`.
 - Assignment to `let` bindings.
 - Field assignment on mutable struct locals.
+- Numeric compound assignment with `+=` and `-=`.
+- Postfix increment/decrement statements with `++` and `--`.
 - Array literals.
 - `Array<T>`.
 - `array.push(value)` on mutable arrays.
@@ -85,6 +87,7 @@ Mutation:
 
 - Only `let` bindings can be mutated.
 - Field assignment requires a mutable local struct.
+- `+=`, `-=`, `++`, and `--` require mutable local numeric variables.
 - `array.push(value)` requires a mutable local array.
 - Loop variables remain immutable.
 
@@ -162,6 +165,13 @@ Prompt and plan generation are deterministic and offline. There is no real LLM i
 - No `async` / `await`.
 - No advanced generics beyond recognized `Option<T>`, `Result<T, E>`, and `Array<T>`.
 - No array `map`, `filter`, or `find`.
+- No safe `array.get`.
+- No nested field assignment.
+- No field assignment on Option-narrowed bindings.
+- No array element assignment.
+- No field compound assignment.
+- No prefix `++` or `--`.
+- No `*=`, `/=`, or `%=`.
 - No object spread updates beyond existing object literal support.
 - No public arena API.
 - No public borrow, lifetime, or reference syntax.
@@ -211,6 +221,19 @@ Array length:
 ```volt
 function size(users: Array<User>): u64 {
   return users.length
+}
+```
+
+Numeric mutation:
+
+```volt
+function count(): i32 {
+  let count = 0
+  count += 1
+  count++
+  count -= 1
+  count--
+  return count
 }
 ```
 

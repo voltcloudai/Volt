@@ -43,6 +43,7 @@ pub fn generate_axum_server(
     let mut lowering = AxumLowering {
         source,
         diagnostics: DiagnosticBag::new(),
+        symbols: CodegenSymbols::default(),
     };
     let rust = lowering.generate(program);
     if lowering.diagnostics.is_empty() {
@@ -55,6 +56,7 @@ pub fn generate_axum_server(
 struct AxumLowering<'a> {
     source: &'a SourceFile,
     diagnostics: DiagnosticBag,
+    symbols: CodegenSymbols,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -143,6 +145,7 @@ impl CodegenSymbols {
 
 impl AxumLowering<'_> {
     fn generate(&mut self, program: &Program) -> String {
+        self.symbols = CodegenSymbols::from_program(program);
         let routes = program
             .declarations
             .iter()
@@ -192,13 +195,12 @@ impl AxumLowering<'_> {
             self.emit_route_query(&mut out, route);
         }
 
-        let symbols = CodegenSymbols::from_program(program);
         for declaration in &program.declarations {
             if let Decl::Function(function) = declaration {
                 if function.name == "main" {
                     continue;
                 }
-                emit_function(&mut out, function, &symbols);
+                emit_function(&mut out, function, &self.symbols);
                 out.push('\n');
             }
         }
@@ -285,7 +287,25 @@ impl AxumLowering<'_> {
 
         out.push_str("    let _ = &ctx;\n");
 
-        let Some(return_expr) = self.emit_route_statements(out, &route.statements) else {
+        let mut env = HashMap::new();
+        if !route.params.is_empty() {
+            env.insert(
+                "params".to_string(),
+                Type::Struct(route_params_type_name(route)),
+            );
+        }
+        if !route.query.is_empty() {
+            env.insert(
+                "query".to_string(),
+                Type::Struct(route_query_type_name(route)),
+            );
+        }
+        if let Some(body_type) = &route.body_type {
+            env.insert("body".to_string(), body_type.clone());
+        }
+        env.insert("ctx".to_string(), Type::Struct("RequestCtx".to_string()));
+
+        let Some(return_expr) = self.emit_route_statements(out, &route.statements, &mut env) else {
             out.push_str("    StatusCode::INTERNAL_SERVER_ERROR.into_response()\n");
             out.push_str("}\n");
             return;
@@ -341,7 +361,12 @@ impl AxumLowering<'_> {
         }
     }
 
-    fn emit_route_statements(&mut self, out: &mut String, statements: &[Stmt]) -> Option<String> {
+    fn emit_route_statements(
+        &mut self,
+        out: &mut String,
+        statements: &[Stmt],
+        env: &mut HashMap<String, Type>,
+    ) -> Option<String> {
         let mut return_expr = None;
         for stmt in statements {
             match stmt {
@@ -352,25 +377,29 @@ impl AxumLowering<'_> {
                     expr,
                     span,
                 } => {
-                    let Some(value) = self.lower_route_expr(expr) else {
+                    let Some(value) = self.lower_route_expr(expr, env) else {
                         self.unsupported(*span);
                         continue;
                     };
                     let mutability = if *mutable { " mut" } else { "" };
-                    let annotation = annotation
+                    let annotation_text = annotation
                         .as_ref()
                         .map(|ty| format!(": {}", rust_type(ty)))
                         .unwrap_or_default();
                     out.push_str(&format!(
-                        "    let{mutability} {name}{annotation} = {value};\n"
+                        "    let{mutability} {name}{annotation_text} = {value};\n"
                     ));
+                    let ty = annotation.clone().unwrap_or_else(|| {
+                        materialize_codegen_type(infer_expr_type(expr, env, &self.symbols))
+                    });
+                    env.insert(name.clone(), ty);
                 }
                 Stmt::Return { expr, span } => {
                     let Some(ok_expr) = route_ok_expr(expr) else {
                         self.unsupported(*span);
                         continue;
                     };
-                    return_expr = self.lower_route_expr(ok_expr);
+                    return_expr = self.lower_route_expr(ok_expr, env);
                     if return_expr.is_none() {
                         self.unsupported(ok_expr.span());
                     }
@@ -381,7 +410,7 @@ impl AxumLowering<'_> {
         return_expr
     }
 
-    fn lower_route_expr(&mut self, expr: &Expr) -> Option<String> {
+    fn lower_route_expr(&mut self, expr: &Expr, env: &HashMap<String, Type>) -> Option<String> {
         match expr {
             Expr::Int { value, .. } => Some(value.to_string()),
             Expr::Float { value, .. } => Some(value.to_string()),
@@ -391,26 +420,28 @@ impl AxumLowering<'_> {
             Expr::ArrayLiteral { elements, .. } => {
                 let mut lowered = Vec::new();
                 for element in elements {
-                    lowered.push(self.lower_route_expr(element)?);
+                    lowered.push(self.lower_route_expr(element, env)?);
                 }
                 Some(format!("vec![{}]", lowered.join(", ")))
             }
             Expr::FieldAccess { object, field, .. } => {
-                let base = self.lower_route_expr(object)?;
-                if field == "length" {
+                let base = self.lower_route_expr(object, env)?;
+                if matches!(infer_expr_type(object, env, &self.symbols), Type::Array(_))
+                    && field == "length"
+                {
                     return Some(format!("{base}.len() as u64"));
                 }
                 Some(format!("{base}.{field}"))
             }
             Expr::Index { target, index, .. } => {
-                let target = self.lower_route_expr(target)?;
-                let index = self.lower_route_index_expr(index)?;
+                let target = self.lower_route_expr(target, env)?;
+                let index = self.lower_route_index_expr(index, env)?;
                 Some(format!("{target}[{index}].clone()"))
             }
             Expr::StructLiteral { name, fields, .. } => {
                 let mut parts = Vec::new();
                 for field in fields {
-                    let value = self.lower_route_expr(&field.expr)?;
+                    let value = self.lower_route_expr(&field.expr, env)?;
                     parts.push(format!("{}: {}", field.name, value));
                 }
                 Some(format!("{name} {{ {} }}", parts.join(", ")))
@@ -418,16 +449,16 @@ impl AxumLowering<'_> {
             Expr::Call { callee, args, .. }
                 if callee != "ok" && callee != "err" && args.len() == 1 =>
             {
-                if let Some(fields) = self.lower_route_object_fields(&args[0]) {
+                if let Some(fields) = self.lower_route_object_fields(&args[0], env) {
                     return Some(format!("{callee} {{ {} }}", fields.join(", ")));
                 }
-                let value = self.lower_route_expr(&args[0])?;
+                let value = self.lower_route_expr(&args[0], env)?;
                 Some(format!("{callee}({value})"))
             }
             Expr::Call { callee, args, .. } if callee != "ok" && callee != "err" => {
                 let mut lowered = Vec::new();
                 for arg in args {
-                    lowered.push(self.lower_route_expr(arg)?);
+                    lowered.push(self.lower_route_expr(arg, env)?);
                 }
                 Some(format!("{callee}({})", lowered.join(", ")))
             }
@@ -437,10 +468,10 @@ impl AxumLowering<'_> {
                 args,
                 ..
             } => {
-                let object = self.lower_route_expr(object)?;
+                let object = self.lower_route_expr(object, env)?;
                 let mut lowered = Vec::new();
                 for arg in args {
-                    lowered.push(self.lower_route_expr(arg)?);
+                    lowered.push(self.lower_route_expr(arg, env)?);
                 }
                 Some(format!("{object}.{method}({})", lowered.join(", ")))
             }
@@ -448,14 +479,22 @@ impl AxumLowering<'_> {
         }
     }
 
-    fn lower_route_index_expr(&mut self, expr: &Expr) -> Option<String> {
+    fn lower_route_index_expr(
+        &mut self,
+        expr: &Expr,
+        env: &HashMap<String, Type>,
+    ) -> Option<String> {
         match expr {
             Expr::Int { value, .. } => Some(format!("{value}usize")),
-            _ => Some(format!("({}) as usize", self.lower_route_expr(expr)?)),
+            _ => Some(format!("({}) as usize", self.lower_route_expr(expr, env)?)),
         }
     }
 
-    fn lower_route_object_fields(&mut self, expr: &Expr) -> Option<Vec<String>> {
+    fn lower_route_object_fields(
+        &mut self,
+        expr: &Expr,
+        env: &HashMap<String, Type>,
+    ) -> Option<Vec<String>> {
         let Expr::ObjectLiteral { fields, .. } = expr else {
             return None;
         };
@@ -463,7 +502,7 @@ impl AxumLowering<'_> {
         for field in fields {
             match field {
                 ObjectField::Named { name, expr, .. } => {
-                    lowered.push(format!("{name}: {}", self.lower_route_expr(expr)?));
+                    lowered.push(format!("{name}: {}", self.lower_route_expr(expr, env)?));
                 }
                 ObjectField::Spread { .. } => return None,
             }
@@ -694,11 +733,40 @@ fn emit_stmt(
                 .unwrap_or_else(|| materialize_codegen_type(infer_expr_type(expr, env, symbols)));
             env.insert(name.clone(), ty);
         }
-        Stmt::Assign { name, expr, .. } => {
-            let expected = env.get(name);
+        Stmt::Assign { target, expr, .. } => {
+            let expected = assign_target_type(target, env, symbols);
             out.push_str(&format!(
-                "{pad}{name} = {};\n",
-                emit_expr_expected(expr, expected, env, symbols)
+                "{pad}{} = {};\n",
+                emit_assign_target(target, env, symbols),
+                emit_expr_expected(expr, expected.as_ref(), env, symbols)
+            ));
+            reset_assign_target_type(target, env);
+        }
+        Stmt::CompoundAssign {
+            target, op, expr, ..
+        } => {
+            out.push_str(&format!(
+                "{pad}{} {}= {};\n",
+                emit_assign_target(target, env, symbols),
+                compound_assign_op(*op),
+                emit_expr_expected(
+                    expr,
+                    assign_target_type(target, env, symbols).as_ref(),
+                    env,
+                    symbols
+                )
+            ));
+        }
+        Stmt::Increment { target, .. } => {
+            out.push_str(&format!(
+                "{pad}{} += 1;\n",
+                emit_assign_target(target, env, symbols)
+            ));
+        }
+        Stmt::Decrement { target, .. } => {
+            out.push_str(&format!(
+                "{pad}{} -= 1;\n",
+                emit_assign_target(target, env, symbols)
             ));
         }
         Stmt::Return { expr, .. } => {
@@ -830,6 +898,54 @@ fn emit_stmt(
                 emit_expr_expected(expr, None, env, symbols)
             ));
         }
+    }
+}
+
+fn emit_assign_target(
+    target: &AssignTarget,
+    env: &HashMap<String, Type>,
+    symbols: &CodegenSymbols,
+) -> String {
+    match target {
+        AssignTarget::Ident(name) => name.clone(),
+        AssignTarget::Field { object, field } => {
+            format!("{}.{}", emit_expr(object, env, symbols), field)
+        }
+        AssignTarget::Unsupported(expr) => emit_expr(expr, env, symbols),
+    }
+}
+
+fn assign_target_type(
+    target: &AssignTarget,
+    env: &HashMap<String, Type>,
+    symbols: &CodegenSymbols,
+) -> Option<Type> {
+    match target {
+        AssignTarget::Ident(name) => env.get(name).cloned(),
+        AssignTarget::Field { object, field } => match infer_expr_type(object, env, symbols) {
+            Type::Struct(name) => symbols
+                .structs
+                .get(&name)
+                .and_then(|fields| fields.get(field))
+                .cloned(),
+            _ => None,
+        },
+        AssignTarget::Unsupported(_) => None,
+    }
+}
+
+fn reset_assign_target_type(target: &AssignTarget, env: &mut HashMap<String, Type>) {
+    if let AssignTarget::Ident(name) = target {
+        if let Some(ty) = env.get(name).cloned() {
+            env.insert(name.clone(), materialize_codegen_type(ty));
+        }
+    }
+}
+
+fn compound_assign_op(op: CompoundAssignOp) -> &'static str {
+    match op {
+        CompoundAssignOp::Add => "+",
+        CompoundAssignOp::Sub => "-",
     }
 }
 
@@ -968,12 +1084,7 @@ fn emit_expr(expr: &Expr, env: &HashMap<String, Type>, symbols: &CodegenSymbols)
         Expr::Var { name, .. } => name.clone(),
         Expr::Binary {
             left, op, right, ..
-        } => format!(
-            "{} {} {}",
-            emit_expr(left, env, symbols),
-            rust_binary_op(*op),
-            emit_expr(right, env, symbols)
-        ),
+        } => emit_binary_expr(left, *op, right, env, symbols),
         Expr::Call { callee, args, .. } => match callee.as_str() {
             "print" => format!(
                 "println!(\"{{:?}}\", {})",
@@ -1091,6 +1202,35 @@ fn emit_expr(expr: &Expr, env: &HashMap<String, Type>, symbols: &CodegenSymbols)
             format!("{error}::{variant} {{ {body} }}")
         }
     }
+}
+
+fn emit_binary_expr(
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+    env: &HashMap<String, Type>,
+    symbols: &CodegenSymbols,
+) -> String {
+    format!(
+        "{} {} {}",
+        emit_comparison_operand(left, op, env, symbols),
+        rust_binary_op(op),
+        emit_comparison_operand(right, op, env, symbols)
+    )
+}
+
+fn emit_comparison_operand(
+    expr: &Expr,
+    op: BinaryOp,
+    env: &HashMap<String, Type>,
+    symbols: &CodegenSymbols,
+) -> String {
+    if matches!(op, BinaryOp::Eq | BinaryOp::NotEq) {
+        if let Expr::String { value, .. } = expr {
+            return format!("{value:?}");
+        }
+    }
+    emit_expr(expr, env, symbols)
 }
 
 fn emit_index_expr(expr: &Expr, env: &HashMap<String, Type>, symbols: &CodegenSymbols) -> String {
@@ -1296,6 +1436,9 @@ fn stmt_span(stmt: &Stmt) -> Span {
     match stmt {
         Stmt::Var { span, .. }
         | Stmt::Assign { span, .. }
+        | Stmt::CompoundAssign { span, .. }
+        | Stmt::Increment { span, .. }
+        | Stmt::Decrement { span, .. }
         | Stmt::Return { span, .. }
         | Stmt::If { span, .. }
         | Stmt::While { span, .. }

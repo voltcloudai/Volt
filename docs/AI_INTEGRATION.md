@@ -63,9 +63,9 @@ AI indexing and HTTP codegen are related but separate:
 - `vlt build` lowers supported native route handlers and tiny inline route bodies into a generated Cargo/Axum project under `target/volt/rust-project`.
 - Unsupported route body syntax fails with `EHTTPLOWER001` before Rust is written.
 
-Agents should treat route declarations as HTTP contracts and put business logic in handler functions. Inline route bodies should stay inside the current lowering subset: simple `const` bindings, `return ok(...)`, literals, field access, simple calls, and struct literals.
+Agents should treat route declarations as HTTP contracts and put business logic in handler functions. Inline route bodies should stay inside the current lowering subset: simple `const`/`let` bindings, `return ok(...)`, literals, field access, array indexing, `array.length`, simple calls, and struct literals.
 
-Prompted agents should also know the current core syntax: use owned values, use `let` for mutable locals, assign only to `let` bindings, keep `const` immutable, use field assignment only on mutable struct locals, use `array.push(value)` only on mutable arrays, treat array indexing as returning an owned value, use `&&` and `||` only with bool operands, use `Array<T>` and `[a, b, c]` for arrays, annotate empty arrays such as `const ids: Array<u64> = []`, use `while (condition) { ... }` for condition-based loops, use `for item in array { ... }` over `Array<T>`, and use normal TypeScript-like `switch` for ordinary value branching. `for-in` currently consumes the array in generated Rust. `switch` is not pattern matching, has no fallthrough, and should not be used for `Option<T>`; use `if (value)` / `if (!value)` instead. Do not use `ctx.arena`; internal arenas are future implementation details only.
+Prompted agents should also know the current core syntax: use owned values, use `let` for mutable locals, assign only to `let` bindings, keep `const` immutable, use field assignment only on mutable local structs, use `+=` and `-=` only on mutable numeric variables, use `++` and `--` only as standalone postfix statements on mutable numeric variables, use `array.push(value)` only on mutable arrays, use `array.length` for array length as `u64`, treat `array[index]` as returning an owned value that may clone and may panic if out of bounds, use `&&` and `||` only with bool operands, use `Array<T>` and `[a, b, c]` for arrays, annotate empty arrays such as `let ids: Array<u64> = []`, use `while (condition) { ... }` for condition-based loops, use `for item in array { ... }` over `Array<T>`, and use normal TypeScript-like `switch` for ordinary value branching. `for-in` currently consumes the array in generated Rust. `switch` is not pattern matching, has no fallthrough, and should not be used for `Option<T>`; use `if (value)` / `if (!value)` instead. Do not use `ctx.arena`; internal arenas are future implementation details only.
 
 ## Provider Interface
 
@@ -107,5 +107,5 @@ The default AI context should be compact and inspectable. Provider-backed planni
 - Native route codegen supports a minimal Axum vertical slice, not middleware, auth, database integration, or OpenAPI.
 - Route handler lowering is v0.1-level and inline route body lowering is intentionally limited to the supported subset.
 - No array `map`, `filter`, or `find` helpers yet.
-- No compound assignment yet.
+- No safe `array.get`, nested field assignment, field assignment on Option-narrowed bindings, array element assignment, field compound assignment, prefix `++` / `--`, or `*=`, `/=`, `%=` yet.
 - Call graph data is not complete yet.

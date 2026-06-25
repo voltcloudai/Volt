@@ -127,9 +127,18 @@ const AGENTS: &str = r#"# Agent Instructions
 - Use assignment only on `let` bindings; `const` bindings are immutable.
 - Use `&&` and `||` only with bool operands.
 - Use `Array<T>` for arrays; empty arrays require contextual type, for example `const ids: Array<u64> = []`.
+- Use `array[index]` to read array values.
+- `array[index]` may panic at runtime if out of bounds in current codegen.
+- Use `array.length` for array length; it returns `u64`.
+- Use `let array: Array<T> = []` before calling `array.push(value)` on an empty array.
 - Use `array.push(value)` only on mutable arrays.
 - Array indexing returns an owned value.
 - Use field assignment only on mutable local structs.
+- Do not use nested field assignment, field assignment on Option-narrowed bindings, or array element assignment.
+- Use `+=` and `-=` for numeric compound assignment.
+- Use `++` and `--` only as standalone statements on mutable numeric variables.
+- Do not use prefix `++` / `--`, field compound assignment, or `*=`, `/=`, `%=`.
+- Assignment remains statement-only.
 - Use `while (condition) { ... }` for condition-based loops.
 - Use `for item in array { ... }` to iterate over `Array<T>`.
 - Use `break` and `continue` only inside loops.
@@ -163,9 +172,18 @@ Use `.ai/project.md`, `.ai/symbols.json`, and `.ai/routes.json` before reading s
 - Generated structs derive Clone.
 - Use `let` for mutable local variables and assign only to `let` bindings.
 - Use `Array<T>` and `[a, b, c]` for arrays; annotate empty arrays.
+- Use `array[index]` to read array values.
+- `array[index]` may panic at runtime if out of bounds in current codegen.
+- Use `array.length` for array length; it returns `u64`.
+- Use `let array: Array<T> = []` before calling `array.push(value)` on an empty array.
 - Use `array.push(value)` only on mutable arrays.
 - Array indexing returns an owned value.
 - Use field assignment only on mutable local structs.
+- Do not use nested field assignment, field assignment on Option-narrowed bindings, or array element assignment.
+- Use `+=` and `-=` for numeric compound assignment.
+- Use `++` and `--` only as standalone statements on mutable numeric variables.
+- Do not use prefix `++` / `--`, field compound assignment, or `*=`, `/=`, `%=`.
+- Assignment remains statement-only.
 - Use `while (condition) { ... }`, `for item in array { ... }`, and normal TypeScript-like `switch` for value branching.
 - Use `break` and `continue` only inside loops; do not use `switch` for Option<T>`.
 - Keep inline route bodies tiny and inside the supported Axum lowering subset.
@@ -302,12 +320,12 @@ This project follows route, service, repository, types, errors, and test modules
 - `*.repository.vlt` owns storage access.
 - `*.types.vlt` owns input/output data types.
 - `*.errors.vlt` owns explicit Result error types.
+- `*.test.vlt` files are placeholders until the native Phase 5 test runner exists.
 "#;
 
 pub const COMMANDS: &str = r#"# Commands
 
 - Check: `vlt check`
-- Test: `vlt test`
 - Format: `vlt fmt`
 - Build: `vlt build`
 - AI index: `vlt ai index`
@@ -339,10 +357,23 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 - Use `Array<T>` for arrays.
 - Array literals use `[a, b, c]`.
 - Empty arrays require contextual type, e.g. `const ids: Array<u64> = []`.
+- Use `array[index]` to read array values.
+- `array[index]` may panic at runtime if out of bounds in current codegen.
+- Use `array.length` for array length.
+- `array.length` returns `u64`.
+- Use `let array: Array<T> = []` before calling `array.push(value)` on an empty array.
 - Use `array.push(value)` only on mutable arrays.
 - Array indexing returns an owned value.
 - For non-Copy values, array indexing may clone in generated Rust.
 - Use field assignment only on mutable local structs.
+- Do not use nested field assignment.
+- Do not use field assignment on Option-narrowed bindings.
+- Do not use array element assignment.
+- Use `+=` and `-=` for numeric compound assignment.
+- Use `++` and `--` only as standalone postfix statements on mutable numeric variables.
+- Do not use prefix `++` or `--`.
+- Do not use `*=`, `/=`, or `%=`.
+- Assignment remains statement-only.
 - Use `while (condition) { ... }` for condition-based loops.
 - Use `for item in array { ... }` to iterate over `Array<T>`.
 - `for-in` currently works over `Array<T>`.
@@ -386,11 +417,14 @@ Arrays:
 - `Array<T>` lowers to `Vec<T>`.
 - Array indexing returns an owned value.
 - For non-Copy values, generated Rust may clone.
+- `array.length` returns `u64`.
+- Out-of-bounds indexing may panic in the current version.
 - `array.push(value)` requires a mutable local array.
 
 Mutation:
 - Only `let` bindings can be mutated.
 - Field assignment requires a mutable local struct.
+- Numeric `+=`, `-=`, `++`, and `--` require mutable local numeric variables.
 - Loop variables remain immutable.
 
 Implementation detail:
@@ -417,8 +451,12 @@ Use this file as the source of truth for currently supported syntax in this proj
 - Assignment is only valid on mutable locals.
 - Field assignment requires a mutable local struct.
 - `Array<T>` lowers to `Vec<T>`.
+- Use `array[index]` to read array values.
+- `array.length` returns `u64`.
 - `array.push(value)` requires a mutable local array.
 - Array indexing returns an owned value and may clone for non-Copy values.
+- Use `+=` and `-=` for numeric compound assignment.
+- Use `++` and `--` only as standalone statements on mutable numeric variables.
 - Use `while`, `for item in array`, `break`, `continue`, and normal TypeScript-like `switch`.
 - Do not use `switch` for `Option<T>`.
 - Keep inline route bodies tiny; put business logic in handler functions.

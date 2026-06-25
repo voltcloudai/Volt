@@ -25,10 +25,12 @@ Variables:
 const name = "Carlos"
 let count = 1
 count = count + 1
+count += 1
+count++
 const age: i32 = 42
 ```
 
-`const` bindings are immutable. `let` creates a mutable local variable and assignment is currently statement-only with identifier targets.
+`const` bindings are immutable. `let` creates a mutable local variable. Assignment is statement-only and currently supports identifier targets and direct fields on mutable local structs.
 
 Types and object literals:
 
@@ -42,6 +44,9 @@ const user = User {
   id: 1
   email: "carlos@test.com"
 }
+
+let updated = user
+updated.email = "new@test.com"
 ```
 
 Conditionals:
@@ -81,7 +86,7 @@ function emptyIds(): Array<u64> {
 
 Statements do not require semicolons. Equality is `===` and `!==`; `==` is not part of the language. `&&` and `||` require bool operands and do not use JavaScript truthiness.
 
-Owned arrays support `array.push(value)` on mutable arrays and indexing with `array[index]`. Array indexing returns an owned value and generated Rust may clone for non-Copy values.
+Owned arrays support `array.push(value)` on mutable arrays, `array.length`, and indexing with `array[index]`. `array.length` returns `u64`. Array indexing returns an owned value, generated Rust may clone for non-Copy values, and current codegen may panic at runtime if the index is out of bounds.
 
 ## Native HTTP Routes
 
@@ -197,12 +202,13 @@ Supported expressions:
 - Array literals
 - Anonymous object literals and spread fields for compact route inputs
 - Field access
+- Array indexing
 
 Array literals are homogeneous. Empty array literals require contextual typing, for example `const ids: Array<u64> = []` or `return []` from a function returning `Array<u64>`.
 
 ## Statements
 
-Supported statements include declarations, assignment, return, `if`, `while`, `for-in`, `break`, `continue`, expression statements, and normal TypeScript-like `switch`.
+Supported statements include declarations, assignment, compound assignment, postfix increment/decrement, return, `if`, `while`, `for-in`, `break`, `continue`, expression statements, and normal TypeScript-like `switch`.
 
 ```ts
 while (condition) {
@@ -212,6 +218,11 @@ while (condition) {
 for item in array {
   // item has the Array<T> element type
 }
+
+count += 1
+count -= 1
+count++
+count--
 
 switch (status) {
   case "draft": {
@@ -231,6 +242,8 @@ switch (status) {
 Use `break` and `continue` only inside loops.
 
 `switch` compares ordinary values. It is not pattern matching, it has no fallthrough, and it is not an Option handling strategy. Use `if (value)` / `if (!value)` for `Option<T>`.
+
+`+=` and `-=` require mutable numeric variables. `++` and `--` are statement-only postfix operations on mutable numeric variables. Prefix `++` / `--`, field compound assignment, array element assignment, nested field assignment, and field assignment on Option-narrowed bindings are not supported yet.
 
 ## Error Model
 
@@ -273,14 +286,14 @@ Scalars may be copied. Strings, arrays, and structs are owned values. Generated 
 
 `Array<T>` lowers to `Vec<T>`. Array indexing returns an owned value. For non-Copy values, generated Rust may clone. Out-of-bounds indexing may panic in the current version.
 
-Field assignment requires a mutable local struct. `array.push(value)` requires a mutable local array. Loop variables remain immutable.
+Field assignment requires a mutable local struct. `array.push(value)` requires a mutable local array. Numeric `+=`, `-=`, `++`, and `--` require mutable local numeric variables. Loop variables remain immutable.
 
 Volt may use request-scoped allocation or arenas internally in the future, but this is an implementation detail and is not exposed as `ctx.arena` or a manual allocation API in Volt code. Volt does not expose Rust lifetimes, references, borrow checker syntax, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs.
 
 ## Current Limitations
 
 - No array `map`, `filter`, or `find` helpers yet.
-- No compound assignment or increment/decrement yet.
+- No safe `array.get`, nested field assignment, field assignment on Option-narrowed bindings, array element assignment, field compound assignment, prefix `++` / `--`, or `*=`, `/=`, `%=` yet.
 - No JavaScript truthiness.
 - No public arena API, Rust references, lifetimes, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs.
 

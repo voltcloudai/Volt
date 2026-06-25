@@ -630,44 +630,16 @@ impl<'a> Checker<'a> {
                     env.insert(name.clone(), LocalBinding::new(ty, *mutable));
                 }
             }
-            Stmt::Assign { name, expr, span } => {
-                let Some(binding) = env.get(name).cloned() else {
-                    self.error(
-                        "E130",
-                        format!("cannot assign to unknown variable `{name}`"),
-                        *span,
-                        "declare the variable with `let` before assigning to it",
-                    );
-                    self.check_expr(expr, env, None);
-                    return;
-                };
-
-                if !binding.mutable {
-                    self.error(
-                        "E131",
-                        format!("cannot assign to immutable variable `{name}`"),
-                        *span,
-                        "use `let` for mutable local variables",
-                    );
-                }
-
-                let actual = self.check_expr(expr, env, Some(&binding.declared_ty));
-                if !binding.declared_ty.is_assignable_from(&actual) {
-                    self.error(
-                        "E132",
-                        format!(
-                            "assignment type mismatch: expected `{}`, found `{actual}`",
-                            binding.declared_ty
-                        ),
-                        expr.span(),
-                        format!("assign a value of type `{}`", binding.declared_ty),
-                    );
-                }
-
-                env.insert(
-                    name.clone(),
-                    LocalBinding::new(binding.declared_ty, binding.mutable),
-                );
+            Stmt::Assign { target, expr, span } => {
+                self.check_assignment(target, expr, *span, env);
+            }
+            Stmt::CompoundAssign {
+                target, expr, span, ..
+            } => {
+                self.check_compound_assignment(target, expr, *span, env);
+            }
+            Stmt::Increment { target, span } | Stmt::Decrement { target, span } => {
+                self.check_increment_assignment(target, *span, env);
             }
             Stmt::Return { expr, .. } => {
                 if matches!(return_type, Type::Void) {
@@ -863,6 +835,268 @@ impl<'a> Checker<'a> {
                         ConditionInfo::default()
                     }
                 }
+            }
+        }
+    }
+
+    fn check_assignment(
+        &mut self,
+        target: &AssignTarget,
+        expr: &Expr,
+        span: Span,
+        env: &mut LocalEnv,
+    ) {
+        match target {
+            AssignTarget::Ident(name) => {
+                let Some(binding) = env.get(name).cloned() else {
+                    self.error(
+                        "E130",
+                        format!("cannot assign to unknown variable `{name}`"),
+                        span,
+                        "declare the variable with `let` before assigning to it",
+                    );
+                    self.check_expr(expr, env, None);
+                    return;
+                };
+
+                if !binding.mutable {
+                    self.error(
+                        "E131",
+                        format!("cannot assign to immutable variable `{name}`"),
+                        span,
+                        "use `let` for mutable local variables",
+                    );
+                }
+
+                let actual = self.check_expr(expr, env, Some(&binding.declared_ty));
+                if !binding.declared_ty.is_assignable_from(&actual) {
+                    self.error(
+                        "E132",
+                        format!(
+                            "assignment type mismatch: expected `{}`, found `{actual}`",
+                            binding.declared_ty
+                        ),
+                        expr.span(),
+                        format!("assign a value of type `{}`", binding.declared_ty),
+                    );
+                }
+
+                env.insert(
+                    name.clone(),
+                    LocalBinding::new(binding.declared_ty, binding.mutable),
+                );
+            }
+            AssignTarget::Field { object, field } => {
+                let Some((object_name, binding)) =
+                    self.check_field_assignment_object(object, span, env)
+                else {
+                    self.check_expr(expr, env, None);
+                    return;
+                };
+
+                let Type::Struct(struct_name) = &binding.ty else {
+                    self.error(
+                        "E169",
+                        "unsupported assignment target",
+                        object.span(),
+                        "field assignment is currently supported only on mutable local structs",
+                    );
+                    self.check_expr(expr, env, None);
+                    return;
+                };
+
+                let Some(struct_sig) = self.structs.get(struct_name).cloned() else {
+                    self.error(
+                        "E107",
+                        format!("unknown type `{struct_name}`"),
+                        object.span(),
+                        "declare the type before assigning to its fields",
+                    );
+                    self.check_expr(expr, env, None);
+                    return;
+                };
+
+                let Some(field_ty) = struct_sig.fields.get(field) else {
+                    self.error(
+                        "E167",
+                        format!("type `{struct_name}` has no field `{field}`"),
+                        span,
+                        "assign only to fields declared by the struct type",
+                    );
+                    self.check_expr(expr, env, None);
+                    return;
+                };
+
+                let actual = self.check_expr(expr, env, Some(field_ty));
+                if !field_ty.is_assignable_from(&actual) {
+                    self.error(
+                        "E168",
+                        format!("field assignment type mismatch: expected `{field_ty}`, found `{actual}`"),
+                        expr.span(),
+                        format!("assign a value of type `{field_ty}`"),
+                    );
+                }
+
+                env.insert(
+                    object_name,
+                    LocalBinding::new(binding.declared_ty, binding.mutable),
+                );
+            }
+            AssignTarget::Unsupported(expr) => {
+                self.error(
+                    "E169",
+                    "unsupported assignment target",
+                    expr.span(),
+                    "assign only to a local variable or a direct field on a mutable local struct",
+                );
+                self.check_expr(expr, env, None);
+            }
+        }
+    }
+
+    fn check_field_assignment_object(
+        &mut self,
+        object: &Expr,
+        span: Span,
+        env: &LocalEnv,
+    ) -> Option<(String, LocalBinding)> {
+        let Expr::Var { name, .. } = object else {
+            self.error(
+                "E169",
+                "unsupported assignment target",
+                span,
+                "nested fields, function results, and indexed values cannot be assigned yet",
+            );
+            return None;
+        };
+
+        let Some(binding) = env.get(name).cloned() else {
+            self.error(
+                "E130",
+                format!("cannot assign to unknown variable `{name}`"),
+                span,
+                "declare the variable with `let` before assigning to its fields",
+            );
+            return None;
+        };
+
+        if !binding.mutable {
+            self.error(
+                "E166",
+                "cannot assign to field on immutable value",
+                span,
+                "use `let` for mutable local structs",
+            );
+        }
+
+        if matches!(binding.declared_ty, Type::Option(_)) {
+            self.error(
+                "E169",
+                "unsupported assignment target",
+                span,
+                "field assignment on narrowed Option<T> values is not supported yet",
+            );
+            return None;
+        }
+
+        Some((name.clone(), binding))
+    }
+
+    fn check_compound_assignment(
+        &mut self,
+        target: &AssignTarget,
+        expr: &Expr,
+        span: Span,
+        env: &LocalEnv,
+    ) {
+        let Some((target_ty, mutable)) = self.check_numeric_mutation_target(target, span, env)
+        else {
+            self.check_expr(expr, env, None);
+            return;
+        };
+
+        let actual = self.check_expr(expr, env, Some(&target_ty));
+        if !target_ty.is_numeric() || !actual.is_numeric() || !target_ty.is_assignable_from(&actual)
+        {
+            self.error(
+                "E171",
+                "compound assignment requires numeric operands",
+                expr.span(),
+                format!("use a numeric value assignable to `{target_ty}`"),
+            );
+        }
+
+        if !mutable {
+            self.error(
+                "E170",
+                "compound assignment target must be mutable",
+                span,
+                "use `let` for mutable numeric variables",
+            );
+        }
+    }
+
+    fn check_increment_assignment(&mut self, target: &AssignTarget, span: Span, env: &LocalEnv) {
+        let Some((target_ty, mutable)) = self.check_numeric_mutation_target(target, span, env)
+        else {
+            return;
+        };
+
+        if !target_ty.is_numeric() {
+            self.error(
+                "E171",
+                "increment and decrement require a numeric target",
+                span,
+                "use `++` and `--` only on mutable numeric variables",
+            );
+        }
+
+        if !mutable {
+            self.error(
+                "E170",
+                "increment and decrement target must be mutable",
+                span,
+                "use `let` for mutable numeric variables",
+            );
+        }
+    }
+
+    fn check_numeric_mutation_target(
+        &mut self,
+        target: &AssignTarget,
+        span: Span,
+        env: &LocalEnv,
+    ) -> Option<(Type, bool)> {
+        match target {
+            AssignTarget::Ident(name) => {
+                let Some(binding) = env.get(name).cloned() else {
+                    self.error(
+                        "E130",
+                        format!("cannot assign to unknown variable `{name}`"),
+                        span,
+                        "declare the variable with `let` before mutating it",
+                    );
+                    return None;
+                };
+                Some((binding.declared_ty, binding.mutable))
+            }
+            AssignTarget::Field { object, .. } => {
+                self.error(
+                    "E169",
+                    "unsupported assignment target",
+                    object.span(),
+                    "compound assignment and increment/decrement currently support variables only",
+                );
+                None
+            }
+            AssignTarget::Unsupported(expr) => {
+                self.error(
+                    "E169",
+                    "unsupported assignment target",
+                    expr.span(),
+                    "mutate only a local numeric variable",
+                );
+                None
             }
         }
     }

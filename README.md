@@ -222,7 +222,7 @@ function countAdmins(users: Array<User>): i32 {
   for user in users {
     switch (user.role) {
       case "admin": {
-        count = count + 1
+        count += 1
       }
 
       default: {
@@ -238,7 +238,7 @@ function waitUntilReady(maxAttempts: i32): i32 {
   let attempts = 0
 
   while (attempts < maxAttempts) {
-    attempts = attempts + 1
+    attempts++
 
     if (attempts === 3) {
       break
@@ -277,7 +277,7 @@ function demo(): string {
 }
 ```
 
-Only `let` bindings can be mutated. Field assignment requires a mutable local struct. `array.push(value)` requires a mutable local array. Array indexing returns an owned value and may clone for non-Copy values. Volt may use request-scoped allocation or arenas internally in the future, but this is an implementation detail and is not exposed as `ctx.arena` or a manual allocation API in Volt code.
+Only `let` bindings can be mutated. Assignment is statement-only. Field assignment requires a mutable local struct. Use `+=` and `-=` for numeric compound assignment, and use `++` / `--` only as standalone statements on mutable numeric variables. `array.length` returns `u64`. `array.push(value)` requires a mutable local array, typically declared with a contextual type such as `let users: Array<User> = []`. Array indexing returns an owned value, may clone for non-Copy values, and currently lowers to Rust `Vec` indexing, which may panic if out of bounds. Volt may use request-scoped allocation or arenas internally in the future, but this is an implementation detail and is not exposed as `ctx.arena` or a manual allocation API in Volt code.
 
 ## Current Limitations
 
@@ -286,7 +286,7 @@ Only `let` bindings can be mutated. Field assignment requires a mutable local st
 - No classes, inheritance, decorators, macros, exceptions, `null`, `undefined`, or `any`.
 - Generic support is limited to recognizing `Option<T>`, `Result<T, E>`, and `Array<T>`.
 - No array `map`, `filter`, or `find` helpers yet.
-- No compound assignment or increment/decrement yet.
+- No safe `array.get`, nested field assignment, field assignment on Option-narrowed bindings, array element assignment, field compound assignment, prefix `++` / `--`, or `*=`, `/=`, `%=` yet.
 - No public arena API, Rust references, lifetimes, Box, Rc, Arc, unsafe, raw pointers, or manual memory APIs.
 - The formatter is intentionally simple and prints canonical source to stdout.
 - Rust code generation is direct and readable, not optimized.

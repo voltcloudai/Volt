@@ -55,6 +55,8 @@ fn new_api_creates_expected_files() {
     let users_routes = std::fs::read_to_string(root.join("src/users/users.routes.vlt")).unwrap();
     assert!(users_routes.contains("route get \"/users/{id}\""));
     assert!(users_routes.contains("params { id: u64 }"));
+    assert!(users_routes.contains("handler getUserRoute"));
+    assert!(users_routes.contains("handler createUserRoute"));
     assert!(!users_routes.contains("app.get("));
 }
 
@@ -74,7 +76,7 @@ fn ai_index_generates_symbols_json() {
     let symbols = std::fs::read_to_string(root.join(".ai/symbols.json")).unwrap();
     assert!(symbols.contains("\"language\": \"Volt\""));
     assert!(symbols.contains("\"name\": \"User\""));
-    assert!(symbols.contains("\"name\": \"createUser\""));
+    assert!(symbols.contains("\"name\": \"createUserRoute\""));
     assert!(symbols.contains("\"name\": \"UserError\""));
     assert!(symbols.contains("\"name\": \"UserNotFound\""));
     assert!(symbols.contains("\"fields\""));
@@ -117,6 +119,8 @@ fn generated_api_builds_axum_project_and_serves_health() {
     assert!(generated.contains("async fn get_health_route"));
     assert!(generated.contains("async fn get_users_id_route"));
     assert!(generated.contains("async fn post_users_route"));
+    assert!(generated.contains("match getUserRoute(params, ctx)"));
+    assert!(generated.contains("match createUserRoute(body, ctx)"));
 
     let cargo_check = Command::new("cargo")
         .arg("check")
@@ -230,6 +234,7 @@ fn ai_index_generates_routes_and_source_map() {
     assert!(routes.contains("\"success\""));
     assert!(routes.contains("\"status\": 200"));
     assert!(routes.contains("\"type\": \"User\""));
+    assert!(routes.contains("\"handler\": \"getUserRoute\""));
 
     let source_map = std::fs::read_to_string(root.join(".ai/source-map.json")).unwrap();
     assert!(source_map.contains("\"path\": \"src/users/users.service.vlt\""));
@@ -247,15 +252,16 @@ fn explain_finds_known_symbol() {
     let root = dir.path().join("my-api");
     assert!(run(&["ai", "index"], &root).status.success());
 
-    let output = run(&["explain", "createUser"], &root);
+    let output = run(&["explain", "createUserRoute"], &root);
     assert!(
         output.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("# Symbol: createUser"));
-    assert!(stdout.contains("function createUser"));
+    assert!(stdout.contains("# Symbol: createUserRoute"));
+    assert!(stdout.contains("function createUserRoute"));
+    assert!(stdout.contains("Related routes: [\"POST /users\"]"));
 }
 
 #[test]
@@ -272,7 +278,8 @@ fn plan_update_user_endpoint_uses_patch_and_users_files() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("PATCH /users/{id}"));
+    assert!(stdout.contains("route patch \"/users/{id}\""));
+    assert!(stdout.contains("handler updateUserRoute"));
     assert!(stdout.contains("Confidence:\nhigh"));
     assert!(stdout.contains("Inferred intent:\nUpdate an existing user."));
     assert!(stdout.contains("src/users/users.routes.vlt"));
@@ -345,14 +352,7 @@ fn native_route_index_includes_structured_metadata() {
     DatabaseError 500
   }
   effects [db, alloc, log]
-{
-  const user = try updateUser({
-    id: params.id,
-    ...body
-  }, ctx)
-
-  return ok(user)
-}
+  handler updateUserRoute
 "#,
     )
     .unwrap();
@@ -374,6 +374,7 @@ fn native_route_index_includes_structured_metadata() {
     assert!(routes.contains("\"db\""));
     assert!(routes.contains("\"alloc\""));
     assert!(routes.contains("\"log\""));
+    assert!(routes.contains("\"handler\": \"updateUserRoute\""));
 
     let source_map = std::fs::read_to_string(root.join(".ai/source-map.json")).unwrap();
     assert!(source_map.contains("\"routes\""));
@@ -456,7 +457,8 @@ fn ai_prompt_generates_useful_generic_prompt() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("# AI implementation prompt"));
     assert!(stdout.contains("## Inferred intent\n\nUpdate an existing user."));
-    assert!(stdout.contains("PATCH /users/{id}"));
+    assert!(stdout.contains("route patch \"/users/{id}\""));
+    assert!(stdout.contains("handler updateUserRoute"));
     assert!(stdout.contains("src/users/users.routes.vlt"));
     assert!(stdout.contains("src/users/users.service.vlt"));
     assert!(stdout.contains("## Validation commands"));
@@ -550,7 +552,8 @@ fn ai_prompt_output_writes_file() {
     assert!(stdout.contains("AI prompt written to update-user.prompt.md"));
     let prompt = std::fs::read_to_string(root.join("update-user.prompt.md")).unwrap();
     assert!(prompt.contains("# AI implementation prompt"));
-    assert!(prompt.contains("PATCH /users/{id}"));
+    assert!(prompt.contains("route patch \"/users/{id}\""));
+    assert!(prompt.contains("handler updateUserRoute"));
 }
 
 #[test]

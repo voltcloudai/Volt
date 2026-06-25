@@ -40,30 +40,23 @@ route patch "/users/{id}"
     EmailAlreadyExists 409
     DatabaseError 500
   }
-  effects [db, alloc, log]
-{
-  const user = try updateUser({
-    id: params.id,
-    ...body
-  }, ctx)
-
-  return ok(user)
-}
+  effects [db, log]
+  handler updateUserRoute
 ```
 
-The indexer records method, path, file, module, params, query, body type, success status/type, error status mappings, and effects. This lets AI agents answer “what endpoints exist?” from compact JSON without opening every route file, and it gives `vlt plan` and `vlt ai prompt` enough structure to suggest native syntax like `/users/{id}` instead of framework-specific `/users/:id`.
+The indexer records method, path, file, module, params, query, body type, success status/type, error status mappings, effects, and handler name. This lets AI agents answer “what endpoints exist?” from compact JSON without opening every route file, and it gives `vlt plan` and `vlt ai prompt` enough structure to suggest native syntax like `/users/{id}` instead of framework-specific `/users/:id`.
 
 Legacy `// @route` comments and simple `app.get/post/put/patch/delete(...)` calls are still scanned as fallback metadata, but native route declarations have priority for the same method/path/file.
 
-The route shape also drives real Rust/Axum code generation for API builds: params map to `axum::extract::Path`, query params map to `axum::extract::Query`, bodies map to `axum::Json<T>`, state maps to request context, success responses map to status plus JSON, and all routes register on one `axum::Router`.
+The route shape also drives real Rust/Axum code generation for API builds: params map to `axum::extract::Path`, query params map to `axum::extract::Query`, bodies map to `axum::Json<T>`, state maps to request context, success responses map to status plus JSON, typed `Err(error)` values map through route error status helpers, and all routes register on one `axum::Router`.
 
 AI indexing and HTTP codegen are related but separate:
 
 - `vlt ai index` records route metadata for planning, explanation, and prompt generation.
-- `vlt build` lowers supported native route bodies into a generated Cargo/Axum project under `target/volt/rust-project`.
+- `vlt build` lowers supported native route handlers and tiny inline route bodies into a generated Cargo/Axum project under `target/volt/rust-project`.
 - Unsupported route body syntax fails with `EHTTPLOWER001` before Rust is written.
 
-Agents should keep route bodies inside the current lowering subset: simple `const` bindings, `return ok(...)`, literals, field access, simple calls, and struct literals.
+Agents should treat route declarations as HTTP contracts and put business logic in handler functions. Inline route bodies should stay inside the current lowering subset: simple `const` bindings, `return ok(...)`, literals, field access, simple calls, and struct literals.
 
 ## Provider Interface
 
@@ -103,5 +96,5 @@ The default AI context should be compact and inspectable. Provider-backed planni
 - `vlt ai prompt` is implemented as deterministic prompt generation only.
 - Route extraction uses native `route` declarations as primary metadata, with comments and simple `app.get/post/put/patch/delete(...)` calls as fallback.
 - Native route codegen supports a minimal Axum vertical slice, not middleware, auth, database integration, or OpenAPI.
-- Route body lowering is intentionally limited to the supported subset.
+- Route handler lowering is v0.1-level and inline route body lowering is intentionally limited to the supported subset.
 - Call graph data is not complete yet.

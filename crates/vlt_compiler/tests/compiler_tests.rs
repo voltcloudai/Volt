@@ -4,8 +4,8 @@ use vlt_compiler::ast::{Decl, Expr, HttpMethod, Stmt};
 use vlt_compiler::project::run_file;
 use vlt_compiler::types::Type;
 use vlt_compiler::{
-    check_program, check_program_with_imports, generate_rust, parse_source, DiagnosticBag,
-    ExternalSymbols, SourceFile,
+    check_program, check_program_with_imports, generate_axum_server, generate_rust, parse_source,
+    DiagnosticBag, ExternalSymbols, SourceFile,
 };
 
 fn source(text: &str) -> SourceFile {
@@ -847,4 +847,226 @@ route get "/users/{id}"
         .all()
         .iter()
         .any(|diagnostic| diagnostic.code == "EHTTP007"));
+}
+
+#[test]
+fn parses_route_with_handler_and_no_inline_body() {
+    let program = parse(
+        r#"
+type User = { id: u64 }
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  handler getUserRoute
+"#,
+    );
+
+    let Decl::Route(route) = &program.declarations[1] else {
+        panic!("expected route");
+    };
+    assert_eq!(route.handler.as_deref(), Some("getUserRoute"));
+    assert!(route.statements.is_empty());
+}
+
+#[test]
+fn parser_reports_handler_without_identifier() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  handler
+"#,
+    );
+    let diagnostics = parse_source(&source).expect_err("handler name should fail");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP011"));
+}
+
+#[test]
+fn parser_reports_handler_and_inline_body() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  handler getUserRoute
+{
+  return ok(User({ id: params.id }))
+}
+"#,
+    );
+    let diagnostics = parse_source(&source).expect_err("handler plus body should fail");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP014"));
+}
+
+#[test]
+fn parser_reports_route_without_handler_or_body() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+"#,
+    );
+    let diagnostics = parse_source(&source).expect_err("route body should be required");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP015"));
+}
+
+#[test]
+fn checker_reports_unknown_route_handler() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  handler getUserRoute
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_program(&program, &source).expect_err("handler should be unknown");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP016"));
+}
+
+#[test]
+fn checker_reports_route_handler_return_mismatch() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+type Other = { id: u64 }
+error UserError { UserNotFound { message: string } }
+
+function getUserRoute(params: GetUsersIdParams, ctx: Ctx): Result<Other, UserError> {
+  return ok(Other({ id: params.id }))
+}
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  errors UserError { UserNotFound 404 }
+  handler getUserRoute
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_program(&program, &source).expect_err("return should mismatch");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP017"));
+}
+
+#[test]
+fn checker_reports_route_handler_params_mismatch() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+error UserError { UserNotFound { message: string } }
+
+function getUserRoute(ctx: Ctx): Result<User, UserError> {
+  return ok(User({ id: 1 }))
+}
+
+route get "/users/{id}"
+  params { id: u64 }
+  ok 200 User
+  errors UserError { UserNotFound 404 }
+  handler getUserRoute
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    let diagnostics = check_program(&program, &source).expect_err("params should mismatch");
+    assert!(diagnostics
+        .all()
+        .iter()
+        .any(|diagnostic| diagnostic.code == "EHTTP018"));
+}
+
+#[test]
+fn checker_accepts_valid_typed_route_handler() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+type UpdateUserInput = { name: string }
+type UsersPage = { page: u32 }
+error UserError { UserNotFound { message: string } }
+
+function updateUserRoute(
+  params: PatchUsersIdParams,
+  query: PatchUsersIdQuery,
+  body: UpdateUserInput,
+  ctx: Ctx
+): Result<User, UserError> {
+  return ok(User({ id: params.id }))
+}
+
+route patch "/users/{id}"
+  params { id: u64 }
+  query { page: u32 }
+  body UpdateUserInput
+  ok 200 User
+  errors UserError { UserNotFound 404 }
+  effects [db, log]
+  handler updateUserRoute
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_program(&program, &source).expect("valid handler route should check");
+}
+
+#[test]
+fn axum_codegen_emits_external_handler_wrapper() {
+    let source = source(
+        r#"
+type User = { id: u64 }
+type UpdateUserInput = { name: string }
+error UserError { UserNotFound { message: string } DatabaseError { message: string } }
+
+function updateUserRoute(
+  params: PatchUsersIdParams,
+  body: UpdateUserInput,
+  ctx: Ctx
+): Result<User, UserError> {
+  return ok(User({ id: params.id }))
+}
+
+route patch "/users/{id}"
+  params { id: u64 }
+  body UpdateUserInput
+  ok 200 User
+  errors UserError {
+    UserNotFound 404
+    DatabaseError 500
+  }
+  handler updateUserRoute
+"#,
+    );
+    let program = parse_source(&source).unwrap();
+    check_program(&program, &source).expect("program should check");
+    let rust = generate_axum_server(&program, &source).expect("axum should lower");
+    assert!(rust.contains("pub struct PatchUsersIdParams"));
+    assert!(rust.contains("fn updateUserRoute(params: PatchUsersIdParams, body: UpdateUserInput, ctx: RequestCtx) -> Result<User, UserError>"));
+    assert!(rust.contains("match updateUserRoute(params, body, ctx)"));
+    assert!(rust.contains("Ok(value) => (StatusCode::OK, Json(value)).into_response()"));
+    assert!(rust.contains("let status = patch_users_id_route_error_status(&error);"));
+    assert!(rust.contains("(status, Json(error)).into_response()"));
 }

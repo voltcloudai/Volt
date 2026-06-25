@@ -114,7 +114,7 @@ function main(): void {
 
 ## Native HTTP Routes
 
-Volt routes are first-class declarations, not framework calls hidden in application code. This keeps backend APIs readable for humans, compact for AI context, easy to index into `.ai/routes.json`, and straightforward to lower into Rust/Axum later.
+Volt routes are first-class declarations, not framework calls hidden in application code. Route declarations describe the HTTP boundary; normal Volt functions contain the implementation logic. This keeps backend APIs readable for humans, compact for AI context, easy to index into `.ai/routes.json`, and straightforward to lower into Rust/Axum.
 
 ```ts
 route patch "/users/{id}"
@@ -127,22 +127,23 @@ route patch "/users/{id}"
     EmailAlreadyExists 409
     DatabaseError 500
   }
-  effects [db, alloc, log]
-{
-  const user = try updateUser({
-    id: params.id,
-    ...body
-  }, ctx)
+  effects [db, log]
+  handler updateUserRoute
 
-  return ok(user)
+function updateUserRoute(
+  params: PatchUsersIdParams,
+  body: UpdateUserInput,
+  ctx: Ctx
+): Result<User, UserError> {
+  return updateUser(params.id, body, ctx)
 }
 ```
 
-Supported methods are `get`, `post`, `put`, `patch`, and `delete`. Route bodies can refer to implicit `params`, `query`, `body`, and `ctx` symbols. Path params use `{id}` syntax so planner output and generated prompts stay consistent with the language, not Express-style `:id` paths.
+Supported methods are `get`, `post`, `put`, `patch`, and `delete`. Path params use `{id}` syntax so planner output and generated prompts stay consistent with the language, not Express-style `:id` paths. Handler arguments are ordered as `params`, `query`, `body`, then `ctx`, omitting inputs the route does not declare. Generated inline params/query types use stable names such as `GetUsersIdParams`, `PatchUsersIdParams`, and `GetUsersQuery`.
 
-Native routes generate structured AI metadata and real Rust/Axum handlers in API builds. Path params become `axum::extract::Path`, query params become `axum::extract::Query`, request bodies become `axum::Json`, success returns use `StatusCode` plus JSON, and routes are registered on one `axum::Router`.
+Native routes generate structured AI metadata and real Rust/Axum handlers in API builds. Path params become `axum::extract::Path`, query params become `axum::extract::Query`, request bodies become `axum::Json`, success returns use `StatusCode` plus JSON, typed `Err(error)` values map through the route error status helper, and routes are registered on one `axum::Router`.
 
-Current route body lowering supports:
+Inline route bodies are still supported for very small endpoints such as `/health`. Current inline body lowering supports:
 
 - `return ok(<struct literal>)`
 - `return ok(<identifier>)`
@@ -152,7 +153,7 @@ Current route body lowering supports:
 - struct literals
 - simple function calls already expressible by existing codegen
 
-Unsupported route body syntax fails with `EHTTPLOWER001` instead of generating invalid Rust.
+Unsupported route body syntax fails with `EHTTPLOWER001` instead of generating invalid Rust. Move business logic into a route handler using `handler myRouteHandler`.
 
 ## Absence and Errors
 
@@ -177,7 +178,7 @@ Use `if (value)` and `if (!value)` to narrow `Option<T>`. Volt does not use Java
 
 ## Current Limitations
 
-- The HTTP runtime is a minimal Axum vertical slice, not a full framework.
+- The HTTP runtime and route handler lowering are a v0.1-level Axum vertical slice, not a full framework or production-ready runtime.
 - No middleware, authentication, database integration, OpenAPI generation, package manager, or LLVM backend yet.
 - No classes, inheritance, decorators, macros, exceptions, `null`, `undefined`, or `any`.
 - Generic support is limited to recognizing `Option<T>` and `Result<T, E>`.
@@ -185,7 +186,7 @@ Use `if (value)` and `if (!value)` to narrow `Option<T>`. Volt does not use Java
 - Rust code generation is direct and readable, not optimized.
 - `vlt plan` is offline and deterministic. It does not call an LLM provider yet.
 - `vlt ai prompt` generates prompts only. It does not call Codex, Claude, OpenAI, Anthropic, or any external AI provider.
-- Native route lowering only supports a small route body subset.
+- Inline native route lowering only supports a small route body subset.
 - Call graph fields are placeholders.
 - Generated API projects use native route syntax.
 

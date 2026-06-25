@@ -2,6 +2,7 @@ use crate::ast::*;
 use crate::checker::{check_program_with_imports, ExternalSymbols, StructSig};
 use crate::diagnostics::{Diagnostic, DiagnosticBag, SourceFile, Span};
 use crate::parser::parse_source;
+use crate::route_names::{route_params_type_name, route_query_type_name};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -71,9 +72,10 @@ pub fn resolve_project(root: &Path) -> ResolveResult<ResolvedProject> {
     }
 
     let exports = collect_exports(&modules, &mut diagnostics);
+    let generated_route_types = collect_generated_route_types(&modules);
 
     for module in &modules {
-        let external = resolve_imports(module, &exports, &mut diagnostics);
+        let external = resolve_imports(module, &exports, &generated_route_types, &mut diagnostics);
         if let Err(bag) =
             check_program_with_imports(&module.program, &module.source, external, false)
         {
@@ -206,9 +208,14 @@ fn collect_exports(
 fn resolve_imports(
     module: &ModuleUnit,
     exports: &HashMap<PathBuf, ModuleExports>,
+    generated_route_types: &HashMap<String, StructSig>,
     diagnostics: &mut DiagnosticBag,
 ) -> ExternalSymbols {
     let mut external = ExternalSymbols::default();
+    for (name, sig) in generated_route_types {
+        external.insert_struct(name.clone(), sig.fields.clone());
+    }
+    external.insert_struct("Ctx", HashMap::new());
 
     for decl in &module.program.declarations {
         let Decl::Import(import) = decl else {
@@ -298,6 +305,42 @@ fn resolve_imports(
     }
 
     external
+}
+
+fn collect_generated_route_types(modules: &[ModuleUnit]) -> HashMap<String, StructSig> {
+    let mut generated = HashMap::new();
+    for module in modules {
+        for decl in &module.program.declarations {
+            let Decl::Route(route) = decl else {
+                continue;
+            };
+            if !route.params.is_empty() {
+                generated.insert(
+                    route_params_type_name(route),
+                    StructSig {
+                        fields: route
+                            .params
+                            .iter()
+                            .map(|field| (field.name.clone(), field.ty.clone()))
+                            .collect(),
+                    },
+                );
+            }
+            if !route.query.is_empty() {
+                generated.insert(
+                    route_query_type_name(route),
+                    StructSig {
+                        fields: route
+                            .query
+                            .iter()
+                            .map(|field| (field.name.clone(), field.ty.clone()))
+                            .collect(),
+                    },
+                );
+            }
+        }
+    }
+    generated
 }
 
 fn resolve_import_path(from_file: &Path, module: &str) -> Option<PathBuf> {

@@ -111,7 +111,8 @@ const AGENTS: &str = r#"# Agent Instructions
 - Use domain `error` declarations for typed errors.
 - Keep route input/output types explicit.
 - Prefer native `route method "path"` declarations over `app.get(...)`.
-- Keep route bodies inside the supported Axum lowering subset until the compiler grows.
+- Treat route declarations as HTTP contracts and put business logic in handler functions.
+- Keep inline route bodies tiny and inside the supported Axum lowering subset until the compiler grows.
 - Run `vlt build` after route changes.
 - Run `vlt ai index` after changing source structure.
 "#;
@@ -121,7 +122,8 @@ const CLAUDE: &str = r#"# Claude Instructions
 Use `.ai/project.md`, `.ai/symbols.json`, and `.ai/routes.json` before reading source files. Prefer compact context first, then inspect only relevant modules.
 
 - Prefer native `route method "path"` declarations.
-- Keep route bodies inside the supported Axum lowering subset.
+- Treat route declarations as HTTP contracts and put business logic in handler functions.
+- Keep inline route bodies tiny and inside the supported Axum lowering subset.
 - Run `vlt build` after route changes.
 "#;
 
@@ -140,9 +142,9 @@ const HEALTH_ROUTES: &str = r#"import { HealthResponse } from "./health.types"
 route get "/health"
   ok 200 HealthResponse
 {
-  return ok(HealthResponse {
+  return ok(HealthResponse({
     status: "ok"
-  })
+  }))
 }
 "#;
 
@@ -153,6 +155,7 @@ const HEALTH_TYPES: &str = r#"export type HealthResponse = {
 
 const USERS_ROUTES: &str = r#"import { User, CreateUserInput } from "./users.types"
 import { UserError } from "./users.errors"
+import { getUserRoute, createUserRoute } from "./users.service"
 
 route get "/users/{id}"
   params { id: u64 }
@@ -161,13 +164,8 @@ route get "/users/{id}"
     UserNotFound 404
     DatabaseError 500
   }
-{
-  return ok(User {
-    id: params.id
-    email: "demo@test.com"
-    name: "Demo User"
-  })
-}
+  effects [db, log]
+  handler getUserRoute
 
 route post "/users"
   body CreateUserInput
@@ -176,32 +174,33 @@ route post "/users"
     InvalidEmail 400
     DatabaseError 500
   }
-{
-  return ok(User {
-    id: 1
-    email: body.email
-    name: body.name
-  })
-}
+  effects [db, log]
+  handler createUserRoute
 "#;
 
 const USERS_SERVICE: &str = r#"import { User, CreateUserInput } from "./users.types"
 import { UserError } from "./users.errors"
 
-export function getUser(id: u64): Result<User, UserError> {
-  return ok(User {
-    id: id
+export function getUserRoute(
+  params: GetUsersIdParams,
+  ctx: Ctx
+): Result<User, UserError> {
+  return ok(User({
+    id: params.id
     email: "demo@test.com"
     name: "Demo User"
-  })
+  }))
 }
 
-export function createUser(input: CreateUserInput): Result<User, UserError> {
-  return ok(User {
+export function createUserRoute(
+  body: CreateUserInput,
+  ctx: Ctx
+): Result<User, UserError> {
+  return ok(User({
     id: 1
-    email: input.email
-    name: input.name
-  })
+    email: body.email
+    name: body.name
+  }))
 }
 "#;
 
@@ -209,19 +208,19 @@ const USERS_REPOSITORY: &str = r#"import { User, CreateUserInput } from "./users
 import { UserError } from "./users.errors"
 
 export function findUserById(id: u64): Result<User, UserError> {
-  return ok(User {
+  return ok(User({
     id: id
     email: "demo@test.com"
     name: "Demo User"
-  })
+  }))
 }
 
 export function insertUser(input: CreateUserInput): Result<User, UserError> {
-  return ok(User {
+  return ok(User({
     id: 1
     email: input.email
     name: input.name
-  })
+  }))
 }
 "#;
 
@@ -253,8 +252,8 @@ pub const ARCHITECTURE: &str = r#"# Architecture
 
 This project follows route, service, repository, types, errors, and test modules per domain.
 
-- `*.routes.vlt` owns HTTP route handlers.
-- `*.service.vlt` owns business logic.
+- `*.routes.vlt` owns HTTP contracts.
+- `*.service.vlt` owns business logic and route handler functions.
 - `*.repository.vlt` owns storage access.
 - `*.types.vlt` owns input/output data types.
 - `*.errors.vlt` owns explicit Result error types.
@@ -288,7 +287,8 @@ pub const LANGUAGE_RULES: &str = r#"# Volt Language Rules for AI Agents
 - Keep route input/output types explicit.
 - Use native `route method "path"` declarations for HTTP endpoints.
 - Prefer `/users/{id}` path params over `/users/:id`.
-- Keep route bodies inside the supported Axum lowering subset: const bindings and `return ok(...)` over literals, field access, calls, and struct literals.
+- Use handler argument order: params, query, body, ctx.
+- Keep inline route bodies tiny and inside the supported Axum lowering subset: const bindings and `return ok(...)` over literals, field access, calls, and struct literals.
 - Run `vlt build` after route changes.
 - Run `vlt ai index` after changing source structure.
 "#;
@@ -335,9 +335,6 @@ route get "/users/{id}"
     UserNotFound 404
     DatabaseError 500
   }
-{
-  const user = try getUser(params.id, ctx)
-  return ok(user)
-}
+  handler getUserRoute
 ```
 "#;

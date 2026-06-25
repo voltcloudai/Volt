@@ -91,6 +91,7 @@ pub struct RouteDecl {
     pub error_type: Option<TypeRef>,
     pub errors: Vec<RouteErrorMapping>,
     pub effects: Vec<String>,
+    pub handler: Option<String>,
     pub statements: Vec<Stmt>,
     pub span: Span,
 }

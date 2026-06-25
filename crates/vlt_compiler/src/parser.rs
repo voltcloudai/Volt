@@ -147,8 +147,12 @@ impl Parser<'_> {
         let mut error_type = None;
         let mut errors = Vec::new();
         let mut effects = Vec::new();
+        let mut handler = None;
 
-        while !self.at(TokenKindName::LBrace) && !self.at(TokenKindName::Eof) {
+        while !self.at(TokenKindName::LBrace)
+            && !self.at(TokenKindName::Eof)
+            && !self.at_route_decl_boundary()
+        {
             if self.eat_keyword("params") {
                 params = self.parse_route_fields("params");
             } else if self.eat_keyword("query") {
@@ -168,13 +172,41 @@ impl Parser<'_> {
                 }
             } else if self.eat_keyword("effects") {
                 effects = self.parse_effects();
+            } else if self.eat_keyword("handler") {
+                if self.at(TokenKindName::LBrace)
+                    || self.at(TokenKindName::Eof)
+                    || self.at_route_decl_boundary()
+                {
+                    let span = self.peek().span;
+                    self.error(
+                        "EHTTP011",
+                        "expected route handler name",
+                        span,
+                        "write `handler myRouteHandler` with an identifier",
+                    );
+                    break;
+                }
+                let token = self.advance();
+                if let TokenKind::Ident(name) = token.kind {
+                    handler = Some(name);
+                } else {
+                    self.error(
+                        "EHTTP011",
+                        "expected route handler name",
+                        token.span,
+                        "write `handler myRouteHandler` with an identifier",
+                    );
+                }
+                if !self.at(TokenKindName::LBrace) && !self.at_route_clause_start() {
+                    break;
+                }
             } else {
                 let token = self.peek().clone();
                 self.error(
                     "EHTTP011",
                     "expected route clause",
                     token.span,
-                    "use `params`, `query`, `body`, `ok`, `errors`, or `effects`",
+                    "use `params`, `query`, `body`, `ok`, `errors`, `effects`, or `handler`",
                 );
                 self.advance();
             }
@@ -189,7 +221,28 @@ impl Parser<'_> {
             );
         }
 
-        let statements = self.parse_block();
+        let has_block = self.at(TokenKindName::LBrace);
+        if handler.is_some() && has_block {
+            self.error(
+                "EHTTP014",
+                "route cannot define both an inline body and a handler",
+                self.peek().span,
+                "move business logic into the handler function or remove the `handler` clause",
+            );
+        } else if handler.is_none() && !has_block {
+            self.error(
+                "EHTTP015",
+                "route must define either an inline body or a handler",
+                method_span,
+                "add a `{ ... }` route body or `handler myRouteHandler`",
+            );
+        }
+
+        let statements = if has_block {
+            self.parse_block()
+        } else {
+            Vec::new()
+        };
         let end = statements
             .last()
             .map(stmt_span)
@@ -209,9 +262,33 @@ impl Parser<'_> {
             error_type,
             errors,
             effects,
+            handler,
             statements,
             span: Span::new(start, end),
         }
+    }
+
+    fn at_route_decl_boundary(&self) -> bool {
+        matches!(
+            self.peek_kind(),
+            TokenKind::Route
+                | TokenKind::Function
+                | TokenKind::Type
+                | TokenKind::Error
+                | TokenKind::Import
+                | TokenKind::Export
+        )
+    }
+
+    fn at_route_clause_start(&self) -> bool {
+        matches!(
+            self.peek_kind(),
+            TokenKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "params" | "query" | "body" | "ok" | "errors" | "effects" | "handler"
+                )
+        )
     }
 
     fn parse_http_method(&mut self) -> (HttpMethod, Span) {
@@ -301,7 +378,7 @@ impl Parser<'_> {
             TokenKind::Int(value) if (0..=u16::MAX as i64).contains(&value) => (value as u16, span),
             TokenKind::Int(value) => {
                 self.error(
-                    "EHTTP014",
+                    "EHTTP019",
                     format!("invalid HTTP status code `{value}`"),
                     span,
                     "use a three-digit HTTP status code",
@@ -309,7 +386,7 @@ impl Parser<'_> {
                 (0, span)
             }
             _ => {
-                self.error("EHTTP014", message, span, "use a numeric status code");
+                self.error("EHTTP019", message, span, "use a numeric status code");
                 (0, span)
             }
         }

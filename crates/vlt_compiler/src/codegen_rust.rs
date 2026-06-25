@@ -1,5 +1,6 @@
 use crate::ast::*;
 use crate::diagnostics::{Diagnostic, DiagnosticBag, SourceFile, Span};
+use crate::route_names::{http_method_name, route_params_type_name, route_query_type_name};
 use crate::types::Type;
 use std::collections::HashMap;
 
@@ -108,7 +109,30 @@ impl CodegenSymbols {
                             .collect(),
                     );
                 }
-                Decl::Import(_) | Decl::Route(_) => {}
+                Decl::Route(route) => {
+                    if !route.params.is_empty() {
+                        symbols.structs.insert(
+                            route_params_type_name(route),
+                            route
+                                .params
+                                .iter()
+                                .map(|field| (field.name.clone(), field.ty.clone()))
+                                .collect(),
+                        );
+                    }
+                    if !route.query.is_empty() {
+                        symbols.structs.insert(
+                            route_query_type_name(route),
+                            route
+                                .query
+                                .iter()
+                                .map(|field| (field.name.clone(), field.ty.clone()))
+                                .collect(),
+                        );
+                    }
+                    symbols.structs.insert("Ctx".to_string(), HashMap::new());
+                }
+                Decl::Import(_) => {}
             }
         }
         symbols
@@ -165,6 +189,17 @@ impl AxumLowering<'_> {
             self.emit_route_query(&mut out, route);
         }
 
+        let symbols = CodegenSymbols::from_program(program);
+        for declaration in &program.declarations {
+            if let Decl::Function(function) = declaration {
+                if function.name == "main" {
+                    continue;
+                }
+                emit_function(&mut out, function, &symbols);
+                out.push('\n');
+            }
+        }
+
         for route in &routes {
             self.emit_route_handler(&mut out, route);
             out.push('\n');
@@ -184,7 +219,10 @@ impl AxumLowering<'_> {
             return;
         }
         out.push_str("#[derive(Debug, Clone, Deserialize)]\n");
-        out.push_str(&format!("pub struct {} {{\n", route_params_name(route)));
+        out.push_str(&format!(
+            "pub struct {} {{\n",
+            route_params_type_name(route)
+        ));
         for field in &route.params {
             out.push_str(&format!(
                 "    pub {}: {},\n",
@@ -200,7 +238,7 @@ impl AxumLowering<'_> {
             return;
         }
         out.push_str("#[derive(Debug, Clone, Deserialize)]\n");
-        out.push_str(&format!("pub struct {} {{\n", route_query_name(route)));
+        out.push_str(&format!("pub struct {} {{\n", route_query_type_name(route)));
         for field in &route.query {
             out.push_str(&format!(
                 "    pub {}: {},\n",
@@ -217,13 +255,13 @@ impl AxumLowering<'_> {
         if !route.params.is_empty() {
             out.push_str(&format!(
                 "    Path(params): Path<{}>,\n",
-                route_params_name(route)
+                route_params_type_name(route)
             ));
         }
         if !route.query.is_empty() {
             out.push_str(&format!(
                 "    Query(query): Query<{}>,\n",
-                route_query_name(route)
+                route_query_type_name(route)
             ));
         }
         out.push_str("    State(state): State<AppState>,\n");
@@ -235,6 +273,13 @@ impl AxumLowering<'_> {
         }
         out.push_str(") -> impl IntoResponse {\n");
         out.push_str("    let ctx = RequestCtx::new(state);\n");
+
+        if let Some(handler) = &route.handler {
+            self.emit_external_route_handler_body(out, route, handler);
+            out.push_str("}\n");
+            return;
+        }
+
         out.push_str("    let _ = &ctx;\n");
 
         let Some(return_expr) = self.emit_route_statements(out, &route.statements) else {
@@ -249,6 +294,48 @@ impl AxumLowering<'_> {
             status_code(route.ok_status)
         ));
         out.push_str("}\n");
+    }
+
+    fn emit_external_route_handler_body(
+        &mut self,
+        out: &mut String,
+        route: &RouteDecl,
+        handler: &str,
+    ) {
+        let mut args = Vec::new();
+        if !route.params.is_empty() {
+            args.push("params");
+        }
+        if !route.query.is_empty() {
+            args.push("query");
+        }
+        if route.body_type.is_some() {
+            args.push("body");
+        }
+        args.push("ctx");
+        let call = format!("{handler}({})", args.join(", "));
+
+        if route.error_type.is_some() {
+            out.push_str(&format!("    match {call} {{\n"));
+            out.push_str(&format!(
+                "        Ok(value) => ({}, Json(value)).into_response(),\n",
+                status_code(route.ok_status)
+            ));
+            out.push_str("        Err(error) => {\n");
+            out.push_str(&format!(
+                "            let status = {}(&error);\n",
+                route_error_status_fn(route)
+            ));
+            out.push_str("            (status, Json(error)).into_response()\n");
+            out.push_str("        }\n");
+            out.push_str("    }\n");
+        } else {
+            out.push_str(&format!("    let value = {call};\n"));
+            out.push_str(&format!(
+                "    ({}, Json(value)).into_response()\n",
+                status_code(route.ok_status)
+            ));
+        }
     }
 
     fn emit_route_statements(&mut self, out: &mut String, statements: &[Stmt]) -> Option<String> {
@@ -304,6 +391,15 @@ impl AxumLowering<'_> {
                 }
                 Some(format!("{name} {{ {} }}", parts.join(", ")))
             }
+            Expr::Call { callee, args, .. }
+                if callee != "ok" && callee != "err" && args.len() == 1 =>
+            {
+                if let Some(fields) = self.lower_route_object_fields(&args[0]) {
+                    return Some(format!("{callee} {{ {} }}", fields.join(", ")));
+                }
+                let value = self.lower_route_expr(&args[0])?;
+                Some(format!("{callee}({value})"))
+            }
             Expr::Call { callee, args, .. } if callee != "ok" && callee != "err" => {
                 let mut lowered = Vec::new();
                 for arg in args {
@@ -313,6 +409,22 @@ impl AxumLowering<'_> {
             }
             _ => None,
         }
+    }
+
+    fn lower_route_object_fields(&mut self, expr: &Expr) -> Option<Vec<String>> {
+        let Expr::ObjectLiteral { fields, .. } = expr else {
+            return None;
+        };
+        let mut lowered = Vec::new();
+        for field in fields {
+            match field {
+                ObjectField::Named { name, expr, .. } => {
+                    lowered.push(format!("{name}: {}", self.lower_route_expr(expr)?));
+                }
+                ObjectField::Spread { .. } => return None,
+            }
+        }
+        Some(lowered)
     }
 
     fn emit_router(&mut self, out: &mut String, routes: &[&RouteDecl]) {
@@ -334,9 +446,6 @@ impl AxumLowering<'_> {
         let Some(Type::Struct(error_name)) = &route.error_type else {
             return;
         };
-        if route.errors.is_empty() {
-            return;
-        }
 
         out.push_str(&format!(
             "fn {}(error: &{}) -> StatusCode {{\n",
@@ -363,7 +472,7 @@ impl AxumLowering<'_> {
             "unsupported route body expression for Axum lowering",
             self.source,
             span,
-            Some("use const bindings and `return ok(...)` with literals, field access, calls, or struct literals".to_string()),
+            Some("move business logic into a route handler using `handler myRouteHandler`, or keep inline bodies to const bindings and `return ok(...)` with simple expressions".to_string()),
         ));
     }
 }
@@ -917,54 +1026,8 @@ fn route_function_name(route: &RouteDecl) -> String {
     name
 }
 
-fn route_params_name(route: &RouteDecl) -> String {
-    format!("{}Params", route_type_base_name(route))
-}
-
-fn route_query_name(route: &RouteDecl) -> String {
-    format!("{}Query", route_type_base_name(route))
-}
-
 fn route_error_status_fn(route: &RouteDecl) -> String {
     format!("{}_error_status", route_function_name(route))
-}
-
-fn route_type_base_name(route: &RouteDecl) -> String {
-    let mut out = String::new();
-    out.push_str(pascal(http_method(route.method)).as_str());
-    for part in route.path.trim_matches('/').split('/') {
-        let cleaned = part
-            .trim_matches('{')
-            .trim_matches('}')
-            .chars()
-            .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-            .collect::<String>();
-        if !cleaned.is_empty() {
-            out.push_str(&pascal(&cleaned));
-        }
-    }
-    if out.is_empty() {
-        "Route".to_string()
-    } else {
-        out
-    }
-}
-
-fn pascal(text: &str) -> String {
-    text.split('_')
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(first) => format!(
-                    "{}{}",
-                    first.to_ascii_uppercase(),
-                    chars.collect::<String>()
-                ),
-                None => String::new(),
-            }
-        })
-        .collect()
 }
 
 fn route_ok_expr(expr: &Expr) -> Option<&Expr> {
@@ -1004,13 +1067,7 @@ fn status_code(status: u16) -> String {
 }
 
 fn http_method(method: HttpMethod) -> &'static str {
-    match method {
-        HttpMethod::Get => "get",
-        HttpMethod::Post => "post",
-        HttpMethod::Put => "put",
-        HttpMethod::Patch => "patch",
-        HttpMethod::Delete => "delete",
-    }
+    http_method_name(method)
 }
 
 fn rust_binary_op(op: BinaryOp) -> &'static str {
@@ -1041,6 +1098,7 @@ fn rust_type(ty: &Type) -> String {
         Type::Void => "()".to_string(),
         Type::Option(inner) => format!("Option<{}>", rust_type(inner)),
         Type::Result(ok, err) => format!("Result<{}, {}>", rust_type(ok), rust_type(err)),
+        Type::Struct(name) if name == "Ctx" => "RequestCtx".to_string(),
         Type::Struct(name) => name.clone(),
         Type::None => "()".to_string(),
         Type::InferInt => "i32".to_string(),

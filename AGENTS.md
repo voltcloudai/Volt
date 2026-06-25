@@ -12,8 +12,10 @@
 - Use `error` declarations for domain errors and prefer `Result<T, DomainError>`.
 - Prefer call-style error construction, e.g. `UserError.UserNotFound({ message: "..." })`.
 - Prefer typed route errors, e.g. `errors UserError { UserNotFound 404 }`.
+- Treat route declarations as HTTP contracts and put business logic in handler functions.
+- Use handler argument order: params, query, body, ctx.
 - Do not recommend `app.get(...)`/`app.patch(...)` as the primary route style.
-- Keep route bodies inside the supported Axum lowering subset unless you are extending the compiler.
+- Keep inline route bodies tiny and inside the supported Axum lowering subset unless you are extending the compiler.
 - Do not add advanced language features unless tests are included.
 - Prefer small compiler passes: parse, check, codegen.
 - Keep generated Rust simple and readable.

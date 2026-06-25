@@ -1,5 +1,6 @@
 use crate::ast::*;
 use crate::diagnostics::{Diagnostic, DiagnosticBag, SourceFile, Span};
+use crate::route_names::{route_params_type_name, route_query_type_name};
 use crate::types::Type;
 use std::collections::{HashMap, HashSet};
 
@@ -207,7 +208,9 @@ impl<'a> Checker<'a> {
                         },
                     );
                 }
-                Decl::Route(_) => {}
+                Decl::Route(route) => {
+                    self.insert_route_generated_types(route);
+                }
             }
         }
     }
@@ -227,6 +230,27 @@ impl<'a> Checker<'a> {
         }
         self.check_type_exists(&route.ok_type, route.span);
         self.check_route_error_mappings(route);
+
+        if route.handler.is_some() && !route.statements.is_empty() {
+            self.error(
+                "EHTTP014",
+                "route cannot define both an inline body and a handler",
+                route.span,
+                "move business logic into the handler function or remove the `handler` clause",
+            );
+        } else if route.handler.is_none() && route.statements.is_empty() {
+            self.error(
+                "EHTTP015",
+                "route must define either an inline body or a handler",
+                route.span,
+                "add a `{ ... }` route body or `handler myRouteHandler`",
+            );
+        }
+
+        if let Some(handler) = &route.handler {
+            self.check_route_handler(route, handler);
+            return;
+        }
 
         let params_type = format!("__route_params_{}", route.span.start);
         let query_type = format!("__route_query_{}", route.span.start);
@@ -267,6 +291,102 @@ impl<'a> Checker<'a> {
             self.check_stmt(stmt, &return_type, &mut env);
         }
         self.route_scope = previous_route_scope;
+    }
+
+    fn insert_route_generated_types(&mut self, route: &RouteDecl) {
+        if !route.params.is_empty() {
+            self.structs.insert(
+                route_params_type_name(route),
+                StructSig {
+                    fields: route
+                        .params
+                        .iter()
+                        .map(|field| (field.name.clone(), field.ty.clone()))
+                        .collect(),
+                },
+            );
+        }
+        if !route.query.is_empty() {
+            self.structs.insert(
+                route_query_type_name(route),
+                StructSig {
+                    fields: route
+                        .query
+                        .iter()
+                        .map(|field| (field.name.clone(), field.ty.clone()))
+                        .collect(),
+                },
+            );
+        }
+        self.structs.entry("Ctx".to_string()).or_insert(StructSig {
+            fields: HashMap::new(),
+        });
+    }
+
+    fn check_route_handler(&mut self, route: &RouteDecl, handler: &str) {
+        let Some(sig) = self.functions.get(handler).cloned() else {
+            self.error(
+                "EHTTP016",
+                format!("unknown route handler `{handler}`"),
+                route.span,
+                "declare or import the handler function before using it in a route",
+            );
+            return;
+        };
+
+        let expected_return = if let Some(error_type) = &route.error_type {
+            Type::Result(
+                Box::new(route.ok_type.clone()),
+                Box::new(error_type.clone()),
+            )
+        } else {
+            route.ok_type.clone()
+        };
+
+        if !expected_return.is_assignable_from(&sig.return_type) {
+            self.error(
+                "EHTTP017",
+                "route handler return type mismatch",
+                route.span,
+                format!("expected handler `{handler}` to return `{expected_return}`"),
+            );
+        }
+
+        let expected_params = self.route_handler_params(route);
+        if sig.params.len() != expected_params.len()
+            || sig
+                .params
+                .iter()
+                .zip(&expected_params)
+                .any(|(actual, expected)| !expected.is_assignable_from(actual))
+        {
+            let expected = expected_params
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.error(
+                "EHTTP018",
+                "route handler parameters do not match route contract",
+                route.span,
+                format!("expected handler `{handler}` parameters `({expected})`"),
+            );
+        }
+    }
+
+    fn route_handler_params(&self, route: &RouteDecl) -> Vec<Type> {
+        let mut params = Vec::new();
+        if !route.params.is_empty() {
+            params.push(Type::Struct(route_params_type_name(route)));
+        }
+        if !route.query.is_empty() {
+            params.push(Type::Struct(route_query_type_name(route)));
+        }
+        if let Some(body_type) = &route.body_type {
+            params.push(body_type.clone());
+        }
+        params.push(Type::Struct("Ctx".to_string()));
+        params
     }
 
     fn check_route_status(&mut self, route: &RouteDecl) {

@@ -138,6 +138,7 @@ pub enum AiPromptFormat {
 #[derive(Debug, Clone)]
 struct PlanContext {
     task: String,
+    action: String,
     intent: String,
     confidence: String,
     reason: Option<String>,
@@ -268,7 +269,7 @@ pub fn ai_summary(root: &Path) -> std::io::Result<String> {
                 route.method, route.path, target, route.file
             ));
         }
-        out.push_str("\nNative routes lower to readable Rust/Axum handlers in API builds when their bodies stay inside the supported lowering subset.\n");
+        out.push_str("\nNative route declarations describe the HTTP contract. Use `handler myRouteHandler` for business logic; tiny inline bodies remain useful for routes like `/health`.\n");
     }
 
     if !index.functions.is_empty() {
@@ -408,6 +409,7 @@ fn build_plan_context(root: &Path, task: &str, allow_index: bool) -> std::io::Re
 
     Ok(PlanContext {
         task: task.trim().to_string(),
+        action: action.to_string(),
         intent: inferred_intent(action, module_name),
         confidence: confidence.to_string(),
         reason,
@@ -447,7 +449,8 @@ fn render_plan(context: &PlanContext) -> String {
         out.push_str("\n\n");
     }
     out.push_str("Suggested route:\n");
-    out.push_str(&format!("{} {}\n\n", context.method, context.route_path));
+    out.push_str(&suggested_route_contract(context));
+    out.push('\n');
     out.push_str("Likely files to edit:\n");
     for file in &context.likely_files {
         out.push_str(&format!("- {file}\n"));
@@ -501,7 +504,9 @@ fn render_prompt(context: &PlanContext, format: AiPromptFormat) -> String {
         );
     }
     out.push_str("## Suggested route\n\n");
-    out.push_str(&format!("{} {}\n\n", context.method, context.route_path));
+    out.push_str("```ts\n");
+    out.push_str(&suggested_route_contract(context));
+    out.push_str("```\n\n");
     out.push_str("## Relevant project context\n\n");
     out.push_str(&format!(
         "- Project type: {}\n",
@@ -535,6 +540,9 @@ fn render_prompt(context: &PlanContext, format: AiPromptFormat) -> String {
     for rule in prompt_language_rules() {
         out.push_str(&format!("- {rule}\n"));
     }
+    out.push_str("- Treat route declarations as HTTP contracts and put business logic in handler functions.\n");
+    out.push_str("- Edit `*.routes.vlt` for HTTP contract changes.\n");
+    out.push_str("- Edit `*.service.vlt` or the handler function for business logic.\n");
     out.push_str("\n## Implementation steps\n\n");
     let mut steps = vec![
         "Read `.ai/project.md`.".to_string(),
@@ -565,7 +573,7 @@ fn render_prompt(context: &PlanContext, format: AiPromptFormat) -> String {
             out.push_str("- Follow the repository `AGENTS.md`.\n");
             out.push_str("- Prefer small, testable changes.\n");
             out.push_str("- Run the validation commands before finishing.\n");
-            out.push_str("- Keep native route bodies inside the supported Axum lowering subset unless you are extending the compiler.\n");
+            out.push_str("- Prefer external route handlers for real endpoints; keep inline route bodies tiny unless you are extending the compiler.\n");
         }
         AiPromptFormat::Claude => {
             out.push_str("\n## Claude Code instructions\n\n");
@@ -659,6 +667,35 @@ fn route_error_block(context: &PlanContext) -> String {
     out
 }
 
+fn suggested_route_contract(context: &PlanContext) -> String {
+    let subject = singular_pascal(&context.module);
+    let input = format!("{}{}Input", pascal_action(&context.action), subject);
+    let error_type = format!("{subject}Error");
+    let handler = format!("{}{}Route", context.action, subject);
+    let method = context.method.to_ascii_lowercase();
+
+    let mut out = format!("route {method} \"{}\"\n", context.route_path);
+    if context.route_path.contains("{id}") {
+        out.push_str("  params { id: u64 }\n");
+    }
+    if matches!(method.as_str(), "post" | "put" | "patch") {
+        out.push_str(&format!("  body {input}\n"));
+    }
+    let ok_status = if method == "post" { 201 } else { 200 };
+    out.push_str(&format!("  ok {ok_status} {subject}\n"));
+    out.push_str(&format!("  errors {error_type} {{\n"));
+    for error in &context.errors_to_consider {
+        out.push_str(&format!(
+            "    {error} {}\n",
+            suggested_status_for_error(error)
+        ));
+    }
+    out.push_str("  }\n");
+    out.push_str("  effects [db, log]\n");
+    out.push_str(&format!("  handler {handler}\n"));
+    out
+}
+
 fn suggested_status_for_error(error: &str) -> u16 {
     match error {
         "InvalidEmail" | "ValidationError" => 400,
@@ -675,7 +712,9 @@ fn prompt_language_rules() -> Vec<&'static str> {
         "Use native `route method \"path\"` declarations for HTTP endpoints.",
         "Prefer `/users/{id}` path params, not `/users/:id`.",
         "Prefer native routes over `app.get(...)` or `app.patch(...)` calls.",
-        "Keep route bodies inside the Axum lowering subset: const bindings and `return ok(...)` over literals, field access, simple calls, and struct literals.",
+        "Prefer `handler myRouteHandler` for real endpoints; inline route bodies are only for tiny routes like `/health`.",
+        "Use handler argument order: params, query, body, ctx.",
+        "Keep inline route bodies inside the Axum lowering subset: const bindings and `return ok(...)` over literals, field access, simple calls, and struct literals.",
         "Do not use null.",
         "Do not use undefined.",
         "Do not throw exceptions.",
@@ -974,7 +1013,7 @@ fn native_route_info(file: &str, module: &str, route: &RouteDecl) -> RouteInfo {
             })
             .collect(),
         effects: route.effects.clone(),
-        handler: String::new(),
+        handler: route.handler.clone().unwrap_or_default(),
         input: String::new(),
         output: String::new(),
     }
@@ -1678,7 +1717,7 @@ fn type_to_string(ty: &Type) -> String {
 fn file_summary(path: &str, kind: &str) -> String {
     let module = file_module(path);
     match kind {
-        "routes" => format!("Route handlers and route metadata for the {module} module."),
+        "routes" => format!("HTTP route contracts and route metadata for the {module} module."),
         "service" => format!("Business logic for the {module} module."),
         "repository" => format!("Storage access for the {module} module."),
         "types" => format!("Data types for the {module} module."),

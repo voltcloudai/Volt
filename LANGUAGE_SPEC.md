@@ -50,7 +50,7 @@ Statements do not require semicolons. Equality is `===` and `!==`; `==` is not p
 
 ## Native HTTP Routes
 
-Routes are top-level declarations. They are first-class language constructs so Volt can parse, check, index, plan, and eventually generate server code from API shape without reverse-engineering framework calls.
+Routes are top-level declarations. They are first-class language constructs so Volt can parse, check, index, plan, and generate server code from API shape without reverse-engineering framework calls. A route is the HTTP contract; normal functions contain business logic.
 
 ```ts
 route get "/users/{id}"
@@ -60,9 +60,10 @@ route get "/users/{id}"
     UserNotFound 404
     DatabaseError 500
   }
-{
-  const user = try getUser(params.id, ctx)
-  return ok(user)
+  handler getUserRoute
+
+function getUserRoute(params: GetUsersIdParams, ctx: Ctx): Result<User, UserError> {
+  return getUser(params.id, ctx)
 }
 ```
 
@@ -80,14 +81,16 @@ route patch "/users/{id}"
     EmailAlreadyExists 409
     DatabaseError 500
   }
-  effects [db, alloc, log]
-{
-  const user = try updateUser({
-    id: params.id,
-    ...body
-  }, ctx)
+  effects [db, log]
+  handler updateUserRoute
 
-  return ok(user)
+function updateUserRoute(
+  params: PatchUsersIdParams,
+  query: PatchUsersIdQuery,
+  body: UpdateUserInput,
+  ctx: Ctx
+): Result<User, UserError> {
+  return updateUser(params.id, query.verbose, body, ctx)
 }
 ```
 
@@ -95,16 +98,19 @@ Rules:
 
 - Methods are lowercase: `get`, `post`, `put`, `patch`, `delete`.
 - Paths are string literals and path params use `{id}` syntax.
-- `params { ... }`, `query { ... }`, `body Type`, `errors ErrorType { ... }`, legacy `errors { ... }`, and `effects [...]` are optional.
+- `params { ... }`, `query { ... }`, `body Type`, `errors ErrorType { ... }`, legacy `errors { ... }`, `effects [...]`, and `handler name` are optional clauses.
 - `ok <status> <Type>` is required.
-- Route bodies can refer to implicit `params`, `query`, `body`, and `ctx`.
+- A route must define either an inline body or a handler, but not both.
+- Handler argument order is `params`, `query`, `body`, `ctx`, omitting undeclared route inputs.
+- Generated route params/query type names are stable: `GET /users/{id}` -> `GetUsersIdParams`, `PATCH /users/{id}` -> `PatchUsersIdParams`, `GET /users` with query -> `GetUsersQuery`.
+- Inline route bodies can refer to implicit `params`, `query`, `body`, and `ctx`.
 - GET routes may omit a body and currently produce a diagnostic if they declare one.
 - Success statuses must be `100..599`; error statuses must be `400..599`.
 - Every `{pathParam}` must be declared in `params`, and every `params` field must appear in the path.
 
-Route declarations lower to Rust/Axum in API builds: path params become `axum::extract::Path`, query params become `axum::extract::Query`, declared bodies become `axum::Json<T>`, state becomes request context, `ok` statuses become `StatusCode` plus JSON responses, and routes are registered on one `axum::Router`.
+Route declarations lower to Rust/Axum in API builds: path params become `axum::extract::Path`, query params become `axum::extract::Query`, declared bodies become `axum::Json<T>`, state becomes request context, `ok` statuses become `StatusCode` plus JSON responses, typed `Err(error)` values map through route error status helpers, and routes are registered on one `axum::Router`.
 
-The current route body lowering subset is intentionally small:
+The current inline route body lowering subset is intentionally small:
 
 - `return ok(<struct literal>)`
 - `return ok(<identifier>)`
@@ -114,7 +120,9 @@ The current route body lowering subset is intentionally small:
 - struct literals
 - simple function calls
 
-Unsupported route body syntax produces `EHTTPLOWER001`.
+Unsupported route body syntax produces `EHTTPLOWER001`. Move business logic into a route handler using `handler myRouteHandler`.
+
+Current limitations: no database integration, middleware/auth, OpenAPI generation, public `match` syntax, or production-ready HTTP runtime yet. Handler lowering is v0.1-level, and only simple generated params/query types are supported.
 
 ## Supported Types
 

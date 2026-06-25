@@ -8,6 +8,7 @@ pub mod lexer;
 pub mod parser;
 pub mod project;
 pub mod resolver;
+pub mod route_names;
 pub mod scaffold;
 pub mod types;
 
